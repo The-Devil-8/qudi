@@ -28,6 +28,8 @@ from interface.odmr_counter_interface import ODMRCounterInterface
 from interface.microwave_interface import MicrowaveInterface
 from interface.microwave_interface import TriggerEdge
 
+import time
+
 class ODMRCounterMicrowaveInterfuse(GenericLogic, ODMRCounterInterface,
                                     MicrowaveInterface):
     """
@@ -111,12 +113,19 @@ class ODMRCounterMicrowaveInterfuse(GenericLogic, ODMRCounterInterface,
 
         @return float[]: the photon counts per second
         """
-
         counts = np.zeros((len(self.get_odmr_channels()), length))
         # self.trigger()
         for i in range(length):
+            t1 = time.time()
             self.trigger()
-            counts[:, i] = self._sc_device.get_counter(samples=1)[0]
+
+            t2 = time.time()
+            data = self._sc_device.get_counter(samples=1)
+            counts[:, i] = np.mean(data, axis=1)  # or sum, depending on your need #JOHN:CAREFUL!
+            #counts[:, i] = self._sc_device.get_counter(samples=1)[0]
+            t3 = time.time()
+            print(f"trigger: {(t2 - t1) * 1000:.1f} ms, read: {(t3 - t2) * 1000:.1f} ms, total: {(t3 - t1) * 1000:.1f} ms")
+            print("counted", counts)
         self.trigger()
         return False, counts
 

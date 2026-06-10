@@ -57,7 +57,7 @@ REM --------------------------------------
 REM Run locally a powershell script to be able to catch the interrupt from the 
 REM exception if an environment is not present.
 
-powershell.exe "Try {conda env remove --yes --name qudi} Catch {return 'No conda environment with name <qudi> is present'}" 
+powershell.exe "Try {conda env remove --yes --name qudi_latest} Catch {return 'No conda environment with name <qudi_latest> is present'}" 
 
 echo Initiating installation of conda environment with name 'qudi'...
 
@@ -72,26 +72,26 @@ REM Get which environment to install for a specific windows version.
 if "%version%" == "6.1" (
     if %OS% == 32BIT ( 
         echo Detected: Windows 7, 32bit 
-        powershell.exe "conda env create -f '%~dp0\conda-env-win7-32bit-qt5.yml' "
+        powershell.exe "conda env create -f '%~dp0\conda-env-win7-32bit-qt5.yml' -p 'C:\ProgramData\Anaconda3\envs\qudi_latest' "
     ) else ( 
         echo Detected: Windows 7, 64bit 
-        powershell.exe "conda env create -f '%~dp0\conda-env-win7-64bit-qt5.yml' "
+        powershell.exe "conda env create -f '%~dp0\conda-env-win7-64bit-qt5.yml' -p 'C:\ProgramData\Anaconda3\envs\qudi_latest' "
     ) 
 )
         
 if "%version%" == "6.2" (
     echo Detected: Windows 8, %OS%
-        powershell.exe "conda env create -f '%~dp0\conda-env-win8-qt5.yml' "
+        powershell.exe "conda env create -f '%~dp0\conda-env-win8-qt5.yml' -p 'C:\ProgramData\Anaconda3\envs\qudi_latest' "
     )
 
 if "%version%" == "6.3" (
     echo Detected: Windows 8.1, %OS%
-        powershell.exe "conda env create -f '%~dp0\conda-env-win8-qt5.yml' "
+        powershell.exe "conda env create -f '%~dp0\conda-env-win8-qt5.yml' -p 'C:\ProgramData\Anaconda3\envs\qudi_latest' "
     )
 
 if "%version%" == "10.0" (
     echo Detected: Windows 10, %OS%
-        powershell.exe "conda env create -f '%~dp0\conda-env-win10-64bit-qt5.yml' "
+        powershell.exe "conda env create -f '%~dp0\conda-env-win10-64bit-qt5.yml' -p 'C:\ProgramData\Anaconda3\envs\qudi_latest' "
     )
 
 

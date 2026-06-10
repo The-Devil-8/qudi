@@ -35,7 +35,8 @@ from core.util.mutex import Mutex
 from core.util.network import netobtain
 
 
-class PulseBlasterESRPRO(Base, SwitchInterface, PulserInterface):
+#class PulseBlasterESRPRO(Base, SwitchInterface, PulserInterface):
+class PulseBlasterESRPRO(Base, PulserInterface):
     """ Hardware class to control the PulseBlasterESR-PRO card from SpinCore.
 
     This file is compatible with the PCI version SP18A of the PulseBlasterESR.

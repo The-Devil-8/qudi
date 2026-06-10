@@ -35,6 +35,7 @@ from core.configoption import ConfigOption
 from core.util.modules import get_main_dir, get_home_dir
 from core.util.helpers import natural_sort
 from core.util.network import netobtain
+from core.util.benchmark import BenchmarkTool ## CP from old QUDI
 from logic.generic_logic import GenericLogic
 from logic.pulsed.pulse_objects import PulseBlock, PulseBlockEnsemble, PulseSequence
 from logic.pulsed.pulse_objects import PulseObjectGenerator, PulseBlockElement
@@ -73,6 +74,11 @@ class SequenceGeneratorLogic(GenericLogic):
                                                    default=None,
                                                    missing='nothing')
 
+    ####### CP from old QUDI
+    _info_on_estimated_upload_time = ConfigOption(name='info_on_estimated_upload_time', default=60, missing='nothing')
+    _disable_bench_prompt = ConfigOption(name='disable_benchmark_prompt', default=False, missing='nothing')
+    ######
+
     # status vars
     # Global parameters describing the channel usage and common parameters used during pulsed object
     # generation for predefined methods.
@@ -94,6 +100,13 @@ class SequenceGeneratorLogic(GenericLogic):
     # _saved_pulse_block_ensembles = StatusVar(default=OrderedDict())
     # _saved_pulse_sequences = StatusVar(default=OrderedDict())
 
+    ############ CP from old QUDI
+    _benchmark_write = BenchmarkTool()
+    _benchmark_write_state = StatusVar(representer=_benchmark_write.save, constructor=_benchmark_write.load_from_dict)
+    _benchmark_load = BenchmarkTool()
+    _benchmark_load_state = StatusVar(representer=_benchmark_load.save, constructor=_benchmark_load.load_from_dict)
+    ############
+
     # define signals
     sigBlockDictUpdated = QtCore.Signal(dict)
     sigEnsembleDictUpdated = QtCore.Signal(dict)
@@ -105,6 +118,7 @@ class SequenceGeneratorLogic(GenericLogic):
     sigSamplingSettingsUpdated = QtCore.Signal(dict)
     sigAvailableWaveformsUpdated = QtCore.Signal(list)
     sigAvailableSequencesUpdated = QtCore.Signal(list)
+    sigBenchmarkComplete = QtCore.Signal() ## CP from old QUDI
 
     sigPredefinedSequenceGenerated = QtCore.Signal(object, bool)
 
@@ -1759,6 +1773,16 @@ class SequenceGeneratorLogic(GenericLogic):
         else:
             array_length = self._overhead_bytes // bytes_per_sample
 
+        n_max_samples = self.pulsegenerator().get_constraints().waveform_length.max
+        if n_max_samples > 0. and ensemble_info['number_of_samples'] > n_max_samples:
+            #self.log.error("Tried to write more samples ({:d}) than device supports ({:d}).".format(
+            #    ensemble_info['number_of_samples'], n_max_samples))
+            print("warning: lot of samples acc. to Ulm's QUDI")      # John Imp: check this
+            #if not self.__sequence_generation_in_progress:
+            #    self.module_state.unlock()
+            #self.sigSampleEnsembleComplete.emit(None)
+            #return -1, list(), dict()
+
         # Allocate the sample arrays that are used for a single write command
         analog_samples = dict()
         digital_samples = dict()
@@ -2077,3 +2101,153 @@ class SequenceGeneratorLogic(GenericLogic):
                 self.pulsegenerator().delete_sequence(seq)
         self.sigAvailableSequencesUpdated.emit(self.sampled_sequences)
         return
+
+    # CP from old QUDI
+    @QtCore.Slot()
+    def run_pg_benchmark(self, t_goal=10):
+        # lock module if it's not already locked (sequence sampling in progress)
+        if self.module_state() == 'idle':
+            self.module_state.lock()
+        else:
+            self.log.error("Module is locked, can't sample benchmark chunk")
+            self.sigSampleEnsembleComplete.emit(None)
+            self.sigLoadedAssetUpdated.emit(*self.loaded_asset)
+            return
+
+        try:
+            constraints = self.pulsegenerator().get_constraints()
+
+            def round_to_granularity(n_samples):
+                granularity = constraints.waveform_length.step
+                return np.ceil(n_samples / granularity) * granularity
+
+            self._benchmark_write.reset()
+            self._benchmark_load.reset()
+
+            n_samples_min = constraints.waveform_length.min
+            n_max_fix = max(10e6, n_samples_min)
+            n_samples_max = min(constraints.waveform_length.max, n_max_fix)
+
+            waveform_name = 'qudi_benchmark_chunk'
+            # n_init_guess = [1e4, 1e6]
+            # n_init_guess = n_samples_max/2e5 * np.asarray([1, 100])
+            n_init_guess = (n_samples_min, n_samples_max/10)
+
+            self.log.info(
+                "Pulse generator benchmark started, expect finish in {:.0f} s."
+                " Will unload current asset!".format(t_goal))
+
+            rescode, _, _, = self._sample_load_benchmark_chunk(n_samples_min, waveform_name,
+                                                               persistent_datapoint=True)
+
+            t_start = time.perf_counter()
+            time_fraction = 32.
+            i = 0
+            while time.perf_counter() - t_start < t_goal and rescode == 0:
+
+                speed = self.get_speed_write_load()
+                t_left = t_goal - (time.perf_counter() - t_start)
+                if self._benchmark_write.sanity and self._benchmark_load.sanity:
+                    n_samples = speed * t_left / time_fraction
+                    n_samples = round_to_granularity(n_samples)
+                else:  # poor speed estimate so far
+                    n_samples = round_to_granularity(np.random.uniform(*n_init_guess))
+
+                if n_samples < n_samples_min:
+                    # don't repeat uninformatively at same n_samples
+                    n_samples = round_to_granularity(np.random.uniform(1, 10) * n_samples_min)
+                if n_samples > n_samples_max:
+                    n_samples = round_to_granularity(np.random.uniform(0.9, 1.0) * n_samples_max)
+
+                t_est = n_samples / speed
+                self.log.debug(
+                    "Running benchmark. Current speed (write/load/tot): "
+                    "{:.3f} / {:.3f} / {:.3f} MSa/s): {} samples for"
+                    " estimated {:.5f} s, {:.5f} s left".format(
+                        self._benchmark_write.estimate_speed() / 1e6,
+                        self._benchmark_load.estimate_speed() / 1e6, speed / 1e6,
+                        n_samples, t_est, t_left))
+                if t_est > t_left:
+                    self.log.debug("Skipped benchmark while trying to exceed time limit.")
+                    continue
+                # ignore datapoint on first run to warm up caches, etc.
+                rescode, _, _, = self._sample_load_benchmark_chunk(n_samples, waveform_name,
+                                                                   persistent_datapoint=True,
+                                                                   ignore_datapoint=(i is 0))
+
+                time_fraction = time_fraction / 2. if time_fraction > 2 else 2
+                i += 1
+
+        except Exception:
+            self.log.exception('Something went wrong while running upload benchmark:')
+        else:
+            self.log.info(f"Pulse generator benchmark finished after {i:d} chunks.")
+        finally:
+            if self.module_state() == 'locked':
+                self.module_state.unlock()
+            self.sigSampleEnsembleComplete.emit(None)
+            self.sigLoadedAssetUpdated.emit(*self.loaded_asset)
+
+
+    ## CP from old QUDI
+    def _sample_load_benchmark_chunk(self, n_samples, waveform_name='qudi_benchmark_chunk',
+                                     persistent_datapoint=False, ignore_datapoint=False):
+
+        def _count_chs(config):
+
+            config_d = sorted([ch for ch in config if ch.startswith('d_')])
+            config_a = sorted([ch for ch in config if ch.startswith('a_')])
+            return len(config_a), len(config_d)
+
+        def _get_largest_channel_config():
+            # find the config that transfers the most data
+            # assumes that analog channels are heavier than digital channels
+            configs = self.pulsegenerator().get_constraints().activation_config
+            if 'all' in configs:
+                largest_config = 'all'
+            else:
+                lens_config = []
+                for config in configs.values():
+                    len_d, len_a = _count_chs(config)
+                    lens_config.append((len_d, len_a))
+                lens_config = np.asarray(lens_config)
+
+                # biggest config of configs with max analog channel size
+                idxs_a = list(np.argwhere(lens_config[:,0] == np.amax(lens_config[:,0])))
+                idxs_a = [i[0] for i in idxs_a]
+                idxs_a_and_len_d = np.asarray([(i, lens_config[i][1]) for i in idxs_a])
+                idx_d = np.argmax(idxs_a_and_len_d[:,1])
+                idx_tot = idxs_a_and_len_d[idx_d][0]
+
+                largest_config = list(configs)[idx_tot]
+
+            a_chs = sorted([ch for ch in configs[largest_config] if ch.startswith('a_')])
+            d_chs = sorted([ch for ch in configs[largest_config] if ch.startswith('d_')])
+
+            return a_chs, d_chs
+
+
+    ## CP from old QUDI
+    def has_valid_pg_benchmark(self):
+        is_valid = not np.isnan(self.get_speed_write_load())
+        ignore = self._disable_bench_prompt
+        if ignore: return True
+        return is_valid
+
+    ## CP from old QUDI
+    def get_speed_write_load(self):
+        """
+        Get the estimated speed of the pulse generator for writing and loading a waveform.
+        :return: speed (Sa/s)
+        """
+
+        if self._benchmark_write.sanity or self._benchmark_load.sanity:
+            # any single speed may be negative and sane, if independent on time (Sa/upload time slope close to zero)
+            # both at the same time is unlikely
+            speed_combined = 1/(1/self._benchmark_write.estimate_speed(check_sanity=False) +
+                      1/self._benchmark_load.estimate_speed(check_sanity=False))
+            if speed_combined < 0:
+                return np.nan
+            return speed_combined
+
+        return np.nan

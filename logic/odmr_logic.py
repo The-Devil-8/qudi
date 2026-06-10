@@ -215,7 +215,7 @@ class ODMRLogic(GenericLogic):
             final_freq_list.extend(freqs)
             self.frequency_lists.append(freqs)
 
-        if type(self.final_freq_list) == list:
+        if self.mw_scanmode == MicrowaveMode.LIST:  # replaced with "type(self.final_freq_list) == list:"
             self.final_freq_list = np.array(final_freq_list)
 
         self.odmr_plot_x = np.array(self.final_freq_list)
