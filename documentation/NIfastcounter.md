@@ -93,3 +93,34 @@ Use `Count_Type = '0'` for the analog workflow and `Count_Type = '1'` for the di
 - The analog and digital acquisition paths duplicate logic and share mutable state.
 - Some comments and variable names suggest nanoseconds, while the interface and `configure()` effectively work in seconds.
 
+## DAQmx call map
+
+`hardware\NIfastcounter.py` imports `PyDAQmx as daq`. These are the direct DAQ-linked calls used by the module:
+
+### Methods that call DAQmx APIs
+
+| Class method | DAQmx calls | Role |
+| --- | --- | --- |
+| `start(acq_time)` | `daq.Task()`, `daq.int32()`, `daq.c_ulong()`, `daq.c_uint64()` | Creates DAQ tasks and read buffers. |
+| `start(acq_time)` analog branch | `CreateAIVoltageChan()`, `CfgAnlgEdgeStartTrig()`, `CfgSampClkTiming()`, `StartTask()` | Configures analog sync/PD acquisition and starts the task. |
+| `start(acq_time)` digital branch | `CreateCOPulseChanFreq()`, `CfgImplicitTiming()`, `CreateCISemiPeriodChan()`, `SetCISemiPeriodTerm()`, `SetCICtrTimebaseSrc()`, `StartTask()` | Configures the pulse clock and counter tasks for digital counting. |
+| `get_data_trace()` analog branch | `ReadAnalogF64()` | Reads the analog sync and detector waveforms. |
+| `get_data_trace()` digital branch | `ReadCounterU32()` | Reads the counter buffers for sync and photon counting. |
+| `stop_device()` | `StopTask()`, `ClearTask()` | Stops and releases all active DAQ tasks. |
+| `stop_measure()` | `StopTask()`, `ClearTask()` | Same cleanup path used when a measurement stops. |
+
+### DAQmx constants used
+
+| Constant | Used for |
+| --- | --- |
+| `daq.DAQmx_Val_Diff` | Differential analog input mode. |
+| `daq.DAQmx_Val_Volts` | Analog input units. |
+| `daq.DAQmx_Val_RisingSlope` | Analog start trigger edge. |
+| `daq.DAQmx_Val_Falling` | Sample clock edge. |
+| `daq.DAQmx_Val_FiniteSamps` | Finite analog sampling. |
+| `daq.DAQmx_Val_Hz` | Counter output frequency units. |
+| `daq.DAQmx_Val_Low` | Counter output idle state. |
+| `daq.DAQmx_Val_ContSamps` | Continuous counter timing. |
+| `daq.DAQmx_Val_Ticks` | Counter semi-period return units. |
+| `daq.DAQmx_Val_GroupByChannel` | Analog buffer read layout. |
+
