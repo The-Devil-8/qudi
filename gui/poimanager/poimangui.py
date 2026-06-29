@@ -242,6 +242,7 @@ class PoiManagerGui(GUIBase):
     # declare connectors
     poimanagerlogic = Connector(interface='PoiManagerLogic')
     scannerlogic = Connector(interface='ConfocalLogic')
+    auto_nv_finder = Connector(interface='AutoNVFinderLogic', optional=True)
 
     # declare signals
     sigTrackPeriodChanged = QtCore.Signal(float)
@@ -267,6 +268,8 @@ class PoiManagerGui(GUIBase):
         self._mouse_moved_proxy = None  # Signal proxy to limit mousMoved event rate
 
         self.__poi_selector_active = False  # Flag indicating if the poi selector is active
+
+        self._auto_nv_finder_widget = None  # Auto NV Finder dock widget
         return
 
     def on_activate(self):
@@ -315,6 +318,9 @@ class PoiManagerGui(GUIBase):
         self.__connect_update_signals_from_logic()
         self.__connect_control_signals_to_logic()
 
+        # Initialize Auto NV Finder dock widget (if logic module is loaded)
+        self.__init_auto_nv_finder_dock()
+
         self._mw.show()
         return
 
@@ -322,6 +328,11 @@ class PoiManagerGui(GUIBase):
         """
         De-initialisation performed during deactivation of the module.
         """
+        # Clean up Auto NV Finder dock widget
+        if self._auto_nv_finder_widget is not None:
+            self._auto_nv_finder_widget.cleanup()
+            self._auto_nv_finder_widget = None
+
         self.toggle_poi_selector(False)
         self.__disconnect_control_signals_to_logic()
         self.__disconnect_update_signals_from_logic()
@@ -364,6 +375,45 @@ class PoiManagerGui(GUIBase):
         if not self._mw.sample_shift_view_Action.isChecked():
             self._mw.sample_shift_view_Action.trigger()
         return
+
+    def __init_auto_nv_finder_dock(self):
+        """Initialize the Auto NV Finder dock widget.
+
+        Only creates the widget if the AutoNVFinderLogic connector is available.
+        This makes the auto-finder an optional add-on that doesn't break
+        existing POI Manager functionality.
+        """
+        try:
+            if not self.auto_nv_finder.is_connected:
+                self.log.info('AutoNVFinderLogic not connected — '
+                              'Auto NV Finder dock widget will not be created.')
+                return
+        except Exception:
+            self.log.info('AutoNVFinderLogic connector not available — '
+                          'Auto NV Finder dock widget will not be created.')
+            return
+
+        try:
+            from gui.poimanager.auto_nv_finder_widget import AutoNVFinderWidget
+
+            view_widget = self._mw.roi_map_ViewWidget
+            poi_diameter = self.poimanagerlogic().poi_diameter
+
+            self._auto_nv_finder_widget = AutoNVFinderWidget(
+                auto_nv_finder_logic=self.auto_nv_finder(),
+                view_widget=view_widget,
+                poi_diameter=poi_diameter,
+                parent=self._mw
+            )
+
+            self._mw.addDockWidget(
+                QtCore.Qt.BottomDockWidgetArea,
+                self._auto_nv_finder_widget)
+
+            self.log.info('Auto NV Finder dock widget initialized.')
+        except Exception as e:
+            self.log.warning('Failed to initialize Auto NV Finder dock: {0}'.format(e))
+            self._auto_nv_finder_widget = None
 
     def __init_roi_scan_image(self):
         # Get the color scheme

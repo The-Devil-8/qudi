@@ -17,7 +17,7 @@ top-level directory of this distribution and at <https://github.com/Ulm-IQO/qudi
 
 from qtpy import QtCore
 import numpy as np
-from scipy.signal import gaussian
+from scipy.signal.windows import gaussian
 from scipy.ndimage import filters
 import scipy.integrate as integrate
 from scipy.interpolate import InterpolatedUnivariateSpline
@@ -556,7 +556,7 @@ class TraceAnalysisLogic(GenericLogic):
 
             # longest = np.max(np.array(occurances))
             # number of steps in between, rather not use that for now
-            # est_bins = np.int(longest/dt)
+            # est_bins = int(longest/dt)
 
             time_array_high = np.array([ii for ii in filter(lambda x: x > 0, time_array)])
             time_array_low = np.array([ii for ii in filter(lambda x: x < 0, time_array)])
@@ -566,7 +566,7 @@ class TraceAnalysisLogic(GenericLogic):
             vals = [i for i in filter(lambda x: x[1] > 0, enumerate(time_hist_high[0][0:num_bins]))]
 
             indices = np.array([val[0] for val in vals])
-            indices = np.array([np.int(indice) for indice in indices])
+            indices = np.array([int(indice) for indice in indices])
             self.log.debug('threshold {0}'.format(threshold))
             self.log.debug('time_array:{0}'.format(time_array))
             self.log.debug('time_array_high:{0}'.format(time_array_high))
@@ -590,7 +590,7 @@ class TraceAnalysisLogic(GenericLogic):
             time_hist_low = np.histogram(time_array_low, bins=num_bins)
             vals = [i for i in filter(lambda x: x[1] > 0, enumerate(time_hist_low[0][0:num_bins]))]
             indices = np.array([val[0] for val in vals])
-            indices = np.array([np.int(indice) for indice in indices])
+            indices = np.array([int(indice) for indice in indices])
             values = np.array([val[1] for val in vals])
             # positive axis
             mirror_axis = -time_hist_low[1][indices]

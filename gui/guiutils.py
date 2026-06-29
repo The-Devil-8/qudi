@@ -38,7 +38,7 @@ class ColorBar(pg.GraphicsObject):
 
         # handle the passed arguments:
         self.stops, self.colors = cmap.getStops('float')
-        self.stops = (self.stops - self.stops.min())/self.stops.ptp()
+        self.stops = (self.stops - self.stops.min())/(self.stops.max() - self.stops.min())
         self.width = width
 
         # Constructs an empty picture which can be altered by QPainter

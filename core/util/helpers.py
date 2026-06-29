@@ -235,7 +235,7 @@ def is_integer(test_value):
     @return: bool, True if the passed value is a integer, otherwise false.
     """
 
-    return type(test_value) in [np.int, np.int8, np.int16, np.int32, np.int64,
+    return type(test_value) in [int, np.int8, np.int16, np.int32, np.int64,
                                 np.uint, np.uint8, np.uint16, np.uint32,
                                 np.uint64]
 
@@ -245,7 +245,7 @@ def is_float(test_value):
 
     @return: bool, True if the passed value is a float, otherwise false.
     """
-    return type(test_value) in [np.float, np.float16, np.float32, np.float64]
+    return type(test_value) in [float, np.float16, np.float32, np.float64]
 
 
 def is_complex(test_value):

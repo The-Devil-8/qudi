@@ -1311,7 +1311,7 @@ class AWGM819X(Base, PulserInterface):
                 if name.split(',')[0] == name:
                     segment_id = self.asset_name_2_id(name, chnl_num, mode='segment')
                 else:
-                    segment_id = np.int(name.split(',')[0])
+                    segment_id = int(name.split(',')[0])
                 self.write(':TRAC{0}:SEL {1}'.format(chnl_num, segment_id))
 
 
@@ -1537,7 +1537,7 @@ class AWGM819X(Base, PulserInterface):
                 segment_id = to_segment_id
                 if name.split(',')[0] != name:
                     # todo: this breaks if there is a , in the name without number
-                    segment_id = np.int(name.split(',')[0])
+                    segment_id = int(name.split(',')[0])
                     self.log.warning("Loading wave to specified segment ({}) via name will deprecate.".format(segment_id))
                 if segment_id == -1:
                     # to next free segment

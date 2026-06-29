@@ -280,7 +280,7 @@ class QDPlotLogic(GenericLogic):
 
             self._clear_old[plot_index] = clear_old
             # check if input is only an array (single plot) or a list of arrays (one or several plots)
-            if isinstance(x[0], np.ndarray):  # if x is an array, type(x[0]) is a np.float
+            if isinstance(x[0], np.ndarray):  # if x is an array, type(x[0]) is a float
                 self._x_data[plot_index] = list(x)
                 self._y_data[plot_index] = list(y)
             else:

@@ -35,9 +35,19 @@ from collections import OrderedDict
 import numpy
 import re
 import os
-import ruamel.yaml as yaml
+import yaml
 from io import BytesIO
 
+# Fix PyYAML scientific notation bug (PyYAML YAML 1.1 does not parse "1e-6" without a dot)
+yaml.resolver.Resolver.add_implicit_resolver(
+    'tag:yaml.org,2002:float',
+    re.compile(r'''^(?:[-+]?(?:[0-9][0-9_]*)\.[0-9_]*(?:[eE][-+]?[0-9]+)?
+                    |\.[0-9_]+(?:[eE][-+]?[0-9]+)?
+                    |[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+\.[0-9_]*
+                    |[-+]?\.(?:inf|Inf|INF)
+                    |\.(?:nan|NaN|NAN)
+                    |[-+]?[0-9]+[eE][-+]?[0-9]+)$''', re.X),
+    list('-+0123456789.'))
 
 def ordered_load(stream, Loader=yaml.Loader):
     """
@@ -168,13 +178,13 @@ def ordered_dump(data, stream=None, Dumper=yaml.Dumper, **kwds):
         """
         Representer for numpy int dtypes
         """
-        return dumper.represent_int(numpy.asscalar(int_data))
+        return dumper.represent_int(int_data.item())
 
     def represent_float(dumper, float_data):
         """
         Representer for numpy float dtypes
         """
-        return dumper.represent_float(numpy.asscalar(float_data))
+        return dumper.represent_float(float_data.item())
 
     def represent_frozenset(dumper, set_data):
         """

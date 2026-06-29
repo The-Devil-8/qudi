@@ -336,7 +336,7 @@ class ColorScaleMagma(ColorScale):
                [0.987691, 0.977154, 0.734536, 1.0],
                [0.987387, 0.984288, 0.742002, 1.0],
                [0.987053, 0.991438, 0.749504, 1.0]
-               ], dtype=np.float)*255
+               ], dtype=float)*255
 
     COLORS_INV = COLORS[::-1]
 
@@ -599,7 +599,7 @@ class ColorScaleInferno(ColorScale):
                  [0.976511, 0.989753, 0.616760, 1.0],
                  [0.982257, 0.994109, 0.631017, 1.0],
                  [0.988362, 0.998364, 0.644924, 1.0]
-                 ], dtype=np.float)*255
+                 ], dtype=float)*255
     COLORS_INV = COLORS[::-1]
 
 class ColorScalePlasma(ColorScale):
@@ -861,7 +861,7 @@ class ColorScalePlasma(ColorScale):
                 [0.944152, 0.961916, 0.146861, 1.0],
                 [0.941896, 0.968590, 0.140956, 1.0],
                 [0.940015, 0.975158, 0.131326, 1.0]
-                ], dtype=np.float)*255
+                ], dtype=float)*255
     COLORS_INV = COLORS[::-1]
 
 class ColorScaleViridis(ColorScale):
@@ -1123,7 +1123,7 @@ class ColorScaleViridis(ColorScale):
                  [0.974417, 0.903590, 0.130215, 1.0],
                  [0.983868, 0.904867, 0.136897, 1.0],
                  [0.993248, 0.906157, 0.143936, 1.0]
-                 ], dtype=np.float)*255
+                 ], dtype=float)*255
     COLORS_INV = COLORS[::-1]
 
 
