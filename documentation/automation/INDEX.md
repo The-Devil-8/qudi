@@ -38,7 +38,7 @@ Automates the process of locating NV centers in a diamond sample by:
 | 08 | [CIP Detection Algorithm](08_cip_detection_algorithm.md) | Detailed algorithm: background subtraction, thresholding, local maxima, shape filtering, Gaussian refinement |
 | 09 | [GUI Integration](09_gui_integration.md) | Auto NV Finder dock widget: controls, candidate table, color overlay markers |
 
-### Operations
+### Operations & Planning
 
 | # | Document | Description |
 |---|----------|-------------|
@@ -46,23 +46,35 @@ Automates the process of locating NV centers in a diamond sample by:
 | 11 | [Troubleshooting](11_troubleshooting.md) | Common issues, parameter tuning, debugging tips |
 | 12 | [End-to-End User Guide](12_user_guide.md) | **Complete how-to-run guide**: prerequisites, config, step-by-step, parameter tuning, TaskRunner |
 | 13 | [Validation Steps (HBT/ODMR)](13_validation_steps.md) | Auto-HBT & Auto-ODMR: what's implemented, what's missing, future roadmap |
+| 14 | [Automation Roadmap & Status](14_automation_roadmap_and_status.md) | Executive summary, approach decision, current status |
+| 15 | [**Phased Implementation Plan**](15_phased_implementation_plan.md) | **Next steps: 7 phases, module wiring, standalone→connected checklist** |
+| 16 | [**Testing Data Requirements**](16_testing_data_requirements.md) | **Dataset catalog, gaps in 200 µm data, acquisition & annotation checklist** |
+| 17 | [**Algorithm Optimization**](17_algorithm_optimization.md) | **Cell boundary, ROI, cluster bboxes, CIP tuning parameters & metrics** |
 
 ## Quick Start
 
-1. Read [12 — User Guide](12_user_guide.md) for the complete how-to-run instructions
-2. Read [03 — CIP Concepts](03_cip_color_image_processing.md) to understand the detection approach
-3. Read [07 — Architecture](07_auto_nv_finder_architecture.md) for the system design
-4. Read [13 — Validation Steps](13_validation_steps.md) for HBT/ODMR validation status
-5. Refer to [11 — Troubleshooting](11_troubleshooting.md) if issues arise
+1. Read [15 — Phased Implementation Plan](15_phased_implementation_plan.md) for **comprehensive next steps**
+2. Read [16 — Testing Data Requirements](16_testing_data_requirements.md) before Phase 2+ (current 200 µm data is incomplete)
+3. Read [17 — Algorithm Optimization](17_algorithm_optimization.md) when tuning cell / ROI / CIP
+4. Read [14 — Roadmap & Status](14_automation_roadmap_and_status.md) for executive summary
+5. Read [12 — User Guide](12_user_guide.md) for how to run today's single-scale pipeline
+6. Read [07 — Architecture](07_auto_nv_finder_architecture.md) for system design
+7. Refer to [11 — Troubleshooting](11_troubleshooting.md) if issues arise
 
 ## Related Files
 
 | File | Role |
 |------|------|
-| `logic/auto_nv_finder_logic.py` | Core automation engine |
+| `logic/auto_nv_finder_logic.py` | Core automation engine (single-scale CIP → optimize → POI) |
+| `logic/roi_segmentation_logic.py` | Cell ROI + bright cluster rejection (offline; Phase 1 target) |
+| `logic/cell_segmentation_logic.py` | Cell boundary mask from wide scans |
 | `logic/image_analysis.py` | CIP utility functions |
+| `logic/image_rebuild_logic.py` | `.dat` → image visualization |
 | `logic/optimizer_logic.py` | Position optimization |
 | `logic/poi_manager_logic.py` | POI storage and tracking |
-| `logic/confocal_logic.py` | Confocal scan acquisition |
+| `logic/confocal_logic.py` | Confocal scan acquisition + FOV control |
+| `logic/automation.py` | Legacy task tree skeleton (not active pipeline) |
 | `gui/poimanager/poimangui.py` | GUI with Auto NV Finder dock |
+| `gui/automation/automationgui.py` | Legacy automation GUI skeleton |
 | `logic/tasks/auto_nv_find.py` | TaskRunner integration |
+| `Confocal/*.dat` | Sample 200×200 µm scan data for offline tests |
