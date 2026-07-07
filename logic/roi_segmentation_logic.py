@@ -5,7 +5,7 @@ Logic module for Region of Interest (ROI) segmentation from confocal scan data.
 This module isolates biological cells from 200×200 µm (and similar wide-field)
 confocal scans by combining adaptive background subtraction, iterative spike
 removal, connected component analysis with size/shape filtering, and bright
-spot exclusion.
+cell-candidate extraction.
 
 Design Rationale
 ----------------
@@ -24,12 +24,13 @@ redesigned pipeline here:
   3. Smooths at the cell scale and thresholds.
   4. Uses connected-component analysis to accept only cell-sized, compact
      regions — rejecting isolated noise pixels and substrate artifacts.
-  5. Within accepted cells, masks out remaining bright NV spots/clusters.
+  5. Within accepted diffuse regions, keeps filtered bright cell candidates.
 
 Note: We are NOT removing individual POIs (NV centers) at this stage.  At wide
 scans the extremely bright spots are mostly large clusters, not single NVs.
-Individual POIs will be identified later at higher resolution (5–1 µm scans)
-inside the mid-intensity ROI regions extracted here.
+Individual POIs can still be identified later at higher resolution (5-1 um
+scans), but the wide-field ROI extracted here is the filtered bright cell
+signal.
 """
 
 import os
@@ -57,9 +58,8 @@ class ROISegmentationLogic:
     """
     Multi-scale adaptive ROI segmentation for wide-field confocal scans.
 
-    Extracts cell-body regions from 200×200 µm (or similar) confocal
-    fluorescence images, rejecting both background substrate and bright
-    NV clusters / noise spikes.
+    Extracts bright cell ROIs from wide-field confocal fluorescence images,
+    using diffuse fluorescence only as a broad localization envelope.
 
     Typical usage::
 
@@ -218,12 +218,13 @@ class ROISegmentationLogic:
                     max_cell_fraction=0.7,
                     min_compactness=0.05,
                     bright_spot_sigma=5.0,
+                    min_bright_cell_area_um2=10.0,
                     bright_spot_dilate=2):
         """
         Segment cell ROIs from a wide-field confocal image.
 
-        Precisely identifies cells and rejects both background substrate
-        and bright NV spikes / clusters.
+        Identifies bright cell ROIs and rejects both background substrate
+        and tiny bright non-cell speckles.
 
         @param np.ndarray image: 3D array (ny, nx, 4) from parse_dat_file.
             Channel 3 is fluorescence intensity.
@@ -241,18 +242,23 @@ class ROISegmentationLogic:
             area that a single component may occupy.  Default 0.7.
         @param float min_compactness: Minimum compactness (4πA/P²) for a
             component to be accepted as a cell.  Default 0.05.
-        @param float bright_spot_sigma: Sigma threshold for bright-spot
-            detection *within* accepted cells.  Default 5.0.
-        @param int bright_spot_dilate: Dilation radius (px) for bright-spot
-            removal within cells.  Default 2.     removal within cells.  Default 2.
+        @param float bright_spot_sigma: Sigma threshold for bright cell
+            detection within accepted diffuse regions.  Default 5.0.
+        @param float min_bright_cell_area_um2: Minimum area (um^2) for final
+            bright ROI components. This is separate from min_cell_area_um2
+            because diffuse bounding regions are intentionally broader than
+            the true bright cell signal. Default 10.
+        @param int bright_spot_dilate: Dilation radius (px) used to recover
+            the full bright cell candidate around thresholded peaks. Default 2.
 
         @return dict: with keys
-            'roi_mask'       — bool array, True inside final ROI (cell body
-                               minus bright spots).
-            'cell_mask'      — bool array, True inside accepted cell regions.
-            'bright_spot_mask' — bool array, True at bright spots within cells.
-            'component_labels' — int array, labelled accepted components.
-            'stats'          — list of dicts with per-cell properties
+            'roi_mask'       - bool array, True inside the final bright cell ROI.
+            'diffuse_region_mask' - bool array, True inside accepted diffuse
+                               bounding regions.
+            'raw_bright_spots' - bool array, True for bright candidates before
+                               final size/shape filtering.
+            'component_labels' - int array, labelled accepted ROI components.
+            'stats'          - list of dicts with per-cell properties
                                (area, centroid, mean_intensity, compactness).
         """
         fluor = image[:, :, 3].astype(float)
@@ -293,8 +299,8 @@ class ROISegmentationLogic:
         # --- Stage 4: Multi-scale Gaussian smoothing ---
         smoothed = gaussian_filter(despiked, sigma=smooth_sigma)
 
-        # --- Stage 5: Adaptive thresholding ---
-        # Remove pure-zero pixels (outside background) for threshold
+        # --- Stage 5: Adaptive thresholding for diffuse regions ---
+        # We find the diffuse regions to use as bounding boxes for the true cells.
         # computation to avoid biasing Otsu.
         nonzero_vals = smoothed[smoothed > 0]
         if len(nonzero_vals) > 10:
@@ -318,8 +324,8 @@ class ROISegmentationLogic:
             empty = np.zeros((ny, nx), dtype=bool)
             return {
                 'roi_mask': empty,
-                'cell_mask': empty,
-                'bright_spot_mask': empty,
+                'diffuse_region_mask': empty,
+                'raw_bright_spots': empty,
                 'component_labels': np.zeros((ny, nx), dtype=int),
                 'stats': [],
             }
@@ -337,8 +343,11 @@ class ROISegmentationLogic:
         # Convert min_cell_area from µm² to pixels
         if pixel_area_um2 > 0:
             min_cell_area_px = max(1, int(min_cell_area_um2 / pixel_area_um2))
+            min_bright_cell_area_px = max(
+                1, int(min_bright_cell_area_um2 / pixel_area_um2))
         else:
             min_cell_area_px = 50
+            min_bright_cell_area_px = 10
 
         max_cell_area_px = int(total_pixels * max_cell_fraction)
 
@@ -357,21 +366,18 @@ class ROISegmentationLogic:
             accepted_labels.add(prop['label'])
             accepted_stats.append(prop)
 
-        # Build filtered cell mask
-        cell_mask = np.isin(labeled_all, list(accepted_labels))
+        # Build diffuse mask
+        diffuse_mask = np.isin(labeled_all, list(accepted_labels))
 
-        # Build filtered component labels
-        component_labels = np.where(cell_mask, labeled_all, 0)
+        # --- Stage 7: Morphological cleanup of diffuse mask ---
+        diffuse_mask = binary_closing(diffuse_mask, iterations=2)
+        diffuse_mask = binary_fill_holes(diffuse_mask)
+        diffuse_mask = binary_opening(diffuse_mask, iterations=1)
 
-        # --- Stage 7: Morphological cleanup ---
-        cell_mask = binary_closing(cell_mask, iterations=2)
-        cell_mask = binary_fill_holes(cell_mask)
-        cell_mask = binary_opening(cell_mask, iterations=1)
-
-        # --- Stage 8: Bright spot exclusion within cells ---
-        bright_spot_mask = np.zeros((ny, nx), dtype=bool)
-        if cell_mask.any():
-            cell_intensities = fluor[cell_mask]
+        # --- Stage 8: Bright spot (Cell) detection within diffuse regions ---
+        raw_bright_spots = np.zeros((ny, nx), dtype=bool)
+        if diffuse_mask.any():
+            cell_intensities = fluor[diffuse_mask]
             med_cell = np.median(cell_intensities)
             mad_cell = np.median(np.abs(cell_intensities - med_cell))
             sigma_cell = 1.4826 * mad_cell
@@ -379,27 +385,44 @@ class ROISegmentationLogic:
                 sigma_cell = 1.0
 
             bright_thresh = med_cell + bright_spot_sigma * sigma_cell
-            bright_spot_mask = (fluor > bright_thresh) & cell_mask
+            raw_bright_spots = (fluor > bright_thresh) & diffuse_mask
 
-            # Dilate bright spots to catch halos
-            if bright_spot_dilate > 0 and bright_spot_mask.any():
+            # Dilate bright spots to catch the full bright cell candidate.
+            if bright_spot_dilate > 0 and raw_bright_spots.any():
                 struct_b = np.ones(
                     (2 * bright_spot_dilate + 1, 2 * bright_spot_dilate + 1),
                     dtype=bool)
-                bright_spot_mask = binary_dilation(bright_spot_mask,
+                raw_bright_spots = binary_dilation(raw_bright_spots,
                                                    structure=struct_b)
-                # Keep only within cell mask
-                bright_spot_mask = bright_spot_mask & cell_mask
+                # Keep only within diffuse mask
+                raw_bright_spots = raw_bright_spots & diffuse_mask
 
-        # --- Final ROI: cell body minus bright spots ---
-        roi_mask = cell_mask & (~bright_spot_mask)
+        # --- Stage 9: Size & Shape filtering on the true cells (bright spots) ---
+        labeled_cells, n_cells = label(raw_bright_spots)
+        cell_props = self.compute_component_properties(labeled_cells, fluor)
+        
+        final_cell_labels = set()
+        final_stats = []
+        
+        for prop in cell_props:
+            if prop['area'] < min_bright_cell_area_px:
+                continue
+            if prop['area'] > max_cell_area_px:
+                continue
+            if prop['compactness'] < min_compactness:
+                continue
+            final_cell_labels.add(prop['label'])
+            final_stats.append(prop)
+
+        roi_mask = np.isin(labeled_cells, list(final_cell_labels))
+        component_labels = np.where(roi_mask, labeled_cells, 0)
 
         return {
             'roi_mask': roi_mask,
-            'cell_mask': cell_mask,
-            'bright_spot_mask': bright_spot_mask,
+            'diffuse_region_mask': diffuse_mask,
+            'raw_bright_spots': raw_bright_spots,
             'component_labels': component_labels,
-            'stats': accepted_stats,
+            'stats': final_stats,
         }
 
     # ------------------------------------------------------------------

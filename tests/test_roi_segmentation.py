@@ -3,8 +3,8 @@
 Unit tests for ROISegmentationLogic.
 
 Tests the multi-scale adaptive ROI segmentation pipeline using synthetic data:
-background estimation, spike removal, cell detection, size/shape filtering,
-bright spot exclusion, and edge cases.
+background estimation, diffuse localization, bright cell extraction,
+size/shape filtering, and edge cases.
 
 Run with: python -m pytest tests/test_roi_segmentation.py -v
 """
@@ -157,7 +157,7 @@ class TestCellDetection:
 
         result = logic.segment_roi(image, min_cell_area_um2=20.0)
         assert result['roi_mask'].any(), "ROI mask should not be empty"
-        assert result['cell_mask'].any(), "Cell mask should not be empty"
+        assert result['diffuse_region_mask'].any(), "Cell mask should not be empty"
 
     def test_two_cells_detected(self, logic):
         """Two well-separated cells should both be found."""
@@ -169,9 +169,9 @@ class TestCellDetection:
         _add_cell(image, 75, 75, 12, 4000)
 
         result = logic.segment_roi(image, min_cell_area_um2=20.0)
-        assert result['cell_mask'].any()
+        assert result['diffuse_region_mask'].any()
         # The cells should cover a reasonable but not majority area
-        frac = result['cell_mask'].sum() / result['cell_mask'].size
+        frac = result['diffuse_region_mask'].sum() / result['diffuse_region_mask'].size
         assert frac < 0.5
 
     def test_no_cells_in_dark_image(self, logic):
@@ -228,18 +228,18 @@ class TestSizeFiltering:
         _add_cell(image, 50, 50, 20, 6000)
 
         result = logic.segment_roi(image, min_cell_area_um2=50.0)
-        assert result['cell_mask'].any(), "Large cell should be detected"
+        assert result['diffuse_region_mask'].any(), "Large cell should be detected"
 
 
 # ======================================================================
-# Test: Bright spot exclusion
+# Test: Bright cell ROI extraction
 # ======================================================================
 
-class TestBrightSpotExclusion:
-    """Tests for bright NV spot removal within cells."""
+class TestBrightCellExtraction:
+    """Tests for extracting bright cell candidates as the final ROI."""
 
-    def test_bright_spot_removed_from_roi(self, logic):
-        """Bright spots within a cell should be excluded from final ROI."""
+    def test_bright_spot_kept_as_roi(self, logic):
+        """Bright spots within a diffuse region should become the final ROI."""
         image = _make_image(100, 100, scan_range_m=100e-6)
         np.random.seed(42)
         image[:, :, 3] = np.random.normal(300, 30, (100, 100))
@@ -252,10 +252,34 @@ class TestBrightSpotExclusion:
         result = logic.segment_roi(image, min_cell_area_um2=20.0,
                                    bright_spot_sigma=3.0)
         # The cell should be detected
-        assert result['cell_mask'].any()
-        # The bright spot should be in bright_spot_mask or removed by sigma clip
-        # ROI should have fewer pixels than cell mask
-        assert result['roi_mask'].sum() <= result['cell_mask'].sum()
+        assert result['diffuse_region_mask'].any()
+        # The bright cell candidate is now the final ROI, not an exclusion mask.
+        assert result['raw_bright_spots'].any()
+        assert result['roi_mask'][50, 50]
+        assert result['roi_mask'].sum() <= result['diffuse_region_mask'].sum()
+
+    def test_bright_candidate_filtered_by_area(self, logic):
+        """Bright candidates can be rejected by the bright-cell area filter."""
+        image = _make_image(100, 100, scan_range_m=100e-6)
+        np.random.seed(42)
+        image[:, :, 3] = np.random.normal(300, 30, (100, 100))
+        image[:, :, 3] = np.maximum(image[:, :, 3], 0)
+        rows, cols = np.ogrid[:100, :100]
+        diffuse_region = (rows - 50) ** 2 + (cols - 50) ** 2 < 18 ** 2
+        image[:, :, 3][diffuse_region] += 3000
+        _add_spike(image, 50, 50, 200000)
+
+        result = logic.segment_roi(
+            image,
+            min_cell_area_um2=20.0,
+            min_bright_cell_area_um2=2000.0,
+            bright_spot_sigma=3.0,
+            bright_spot_dilate=1,
+        )
+
+        assert result['diffuse_region_mask'].any()
+        assert result['raw_bright_spots'].any()
+        assert not result['roi_mask'].any()
 
 
 # ======================================================================
@@ -311,8 +335,8 @@ class TestEdgeCases:
         _add_cell(image, 40, 30, 10, 3000)
         result = logic.segment_roi(image, min_cell_area_um2=10.0)
         assert result['roi_mask'].shape == (80, 60)
-        assert result['cell_mask'].shape == (80, 60)
-        assert result['bright_spot_mask'].shape == (80, 60)
+        assert result['diffuse_region_mask'].shape == (80, 60)
+        assert result['raw_bright_spots'].shape == (80, 60)
         assert result['component_labels'].shape == (80, 60)
 
     def test_stats_contain_expected_keys(self, logic):

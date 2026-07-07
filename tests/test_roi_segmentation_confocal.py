@@ -4,7 +4,7 @@ Integration tests for ROISegmentationLogic using real wide-field confocal data.
 
 Tests the multi-scale adaptive ROI segmentation pipeline on the 4 provided
 200x200 µm confocal images. Verifies that cell bodies are correctly extracted
-while background and bright NV clusters are excluded.
+while background and diffuse non-cell fluorescence are excluded.
 
 Outputs visual verification panels to: tests/test_roi_segmentation/output/
 Run with: python -m pytest tests/test_roi_segmentation_confocal.py -v
@@ -47,6 +47,8 @@ def logic():
 @pytest.mark.parametrize("filename", CONFOCAL_FILES)
 def test_confocal_scan_segmentation(logic, filename):
     filepath = os.path.join(CONFOCAL_DIR, filename)
+    if not os.path.exists(filepath):
+        pytest.skip(f"Confocal fixture not found: {filepath}")
     
     # 1. Parse the file
     image, ux, uy, header = logic.parse_dat_file(filepath)
@@ -60,8 +62,8 @@ def test_confocal_scan_segmentation(logic, filename):
     result = logic.segment_roi(image)
     
     roi_mask = result['roi_mask']
-    cell_mask = result['cell_mask']
-    bright_spot_mask = result['bright_spot_mask']
+    diffuse_mask = result['diffuse_region_mask']
+    raw_bright_spots = result['raw_bright_spots']
     component_labels = result['component_labels']
     stats = result['stats']
     
@@ -78,20 +80,9 @@ def test_confocal_scan_segmentation(logic, filename):
     num_cells = len(stats)
     assert 1 <= num_cells <= 30, f"Found unexpected number of cells ({num_cells}) in {filename}"
     
-    # Bright spots must have higher intensity than the rest of the cell
-    if bright_spot_mask.any():
-        max_bright_intensity = fluor[bright_spot_mask].max()
-        if roi_mask.any():
-            max_roi_intensity = fluor[roi_mask].max()
-            # It's possible for some ROI pixel to be bright if the threshold wasn't hit, 
-            # but generally bright spots contain the max values.
-            # Using 99th percentile to be robust against single outlier pixels.
-            roi_99th = np.percentile(fluor[roi_mask], 99)
-            assert max_bright_intensity > roi_99th, "Bright spots are not actually brighter than ROI"
-    
     # 4. Generate Visual Verification Panel
     generate_verification_plot(
-        filename, ux, uy, fluor, cell_mask, bright_spot_mask, roi_mask, component_labels
+        filename, ux, uy, fluor, diffuse_mask, raw_bright_spots, roi_mask, component_labels
     )
     
     # 5. Test Filter and Save
@@ -102,7 +93,7 @@ def test_confocal_scan_segmentation(logic, filename):
     assert os.path.exists(actual_out_path)
 
 
-def generate_verification_plot(filename, ux, uy, fluor, cell_mask, bright_spot_mask, roi_mask, component_labels):
+def generate_verification_plot(filename, ux, uy, fluor, diffuse_mask, raw_bright_spots, roi_mask, component_labels):
     """Generates a 4-panel diagnostic plot to verify segmentation."""
     fig, axes = plt.subplots(2, 2, figsize=(14, 12))
     axes = axes.flatten()
@@ -119,23 +110,22 @@ def generate_verification_plot(filename, ux, uy, fluor, cell_mask, bright_spot_m
     axes[0].set_title(f"Original: {filename}\n(Inferno: vmin={vmin:.0f}, vmax={vmax:.0f})")
     fig.colorbar(im0, ax=axes[0])
     
-    # Panel 2: Component Labels (Cell Mask)
-    masked_labels = np.ma.masked_where(component_labels == 0, component_labels)
+    # Panel 2: Diffuse Region Mask
     im1 = axes[1].imshow(fluor, extent=extent, origin='lower', cmap='gray', vmin=vmin, vmax=vmax, alpha=0.5)
-    axes[1].imshow(masked_labels, extent=extent, origin='lower', cmap='tab20', alpha=0.7)
-    axes[1].set_title("Cell Mask (Connected Components)")
+    axes[1].imshow(diffuse_mask, extent=extent, origin='lower', cmap='Blues', alpha=0.5)
+    axes[1].set_title("Diffuse Region Mask (Bounding areas)")
     
-    # Panel 3: Bright Spots
+    # Panel 3: Raw Bright Spots
     im2 = axes[2].imshow(fluor, extent=extent, origin='lower', cmap='gray', vmin=vmin, vmax=vmax, alpha=0.5)
-    bright_overlay = np.ma.masked_where(~bright_spot_mask, np.ones_like(bright_spot_mask))
+    bright_overlay = np.ma.masked_where(~raw_bright_spots, np.ones_like(raw_bright_spots))
     axes[2].imshow(bright_overlay, extent=extent, origin='lower', cmap='Reds', vmin=0, vmax=1, alpha=0.7)
-    axes[2].set_title("Excluded Bright Spots (NV Clusters)")
+    axes[2].set_title("Cell Mask (Bright NV Clusters)")
     
     # Panel 4: Final ROI
     roi_fluor = fluor.copy()
     roi_fluor[~roi_mask] = 0.0
     im3 = axes[3].imshow(roi_fluor, extent=extent, origin='lower', cmap='inferno', vmin=vmin, vmax=vmax)
-    axes[3].set_title("Final ROI (Cell Body minus Bright Spots)")
+    axes[3].set_title("Final ROI (Original Cell Fluorescence)")
     fig.colorbar(im3, ax=axes[3])
     
     for ax in axes:

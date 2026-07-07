@@ -1,53 +1,98 @@
-# Region of Interest (ROI) vs. Overly Bright Clusters
+# Region of Interest (ROI) Segmentation: Bright Cell Extraction
 
-This document describes the algorithms behind the `ROISegmentationLogic` module, detailing how to explicitly isolate a cell's mid-intensity Region of Interest (ROI) while rejecting overly bright clusters and dark substrate background on wide-field confocal scans (e.g. 200×200 µm).
+This document describes the `ROISegmentationLogic` pipeline for extracting cell
+ROIs from wide-field confocal scans.
 
-## Background: ROI vs. Bright Clusters
+## Corrected Interpretation
 
-In advanced confocal analysis of biological cells at wide scan areas (e.g., 200 microns and above), we often encounter extremely bright spots. These are mostly large clusters, not individual NV centers (Points of Interest, or POIs). Individual POIs will be found later when zooming in closer (e.g., 5 to 1 micron resolution). 
+The ROI target is the bright localized fluorescence inside valid diffuse
+regions. Earlier versions treated those bright areas as NV-center artifacts and
+subtracted them from the final ROI. That was wrong for the current dataset: the
+bright highlighted regions are the cells we want to keep.
 
-Therefore, at this wide-scan stage, we must distinguish between:
-1. **Region of Interest (ROI)**: The continuous, macro-structural area containing the cell body. It is characterized by low-to-moderate intensity, slowly-varying auto-fluorescence. We extract this mid-intensity "middle ground" area to analyze cellular background without bias, leaving room for future high-resolution POI analysis.
-2. **Bright Clusters**: The extremely bright, localized intensity spikes. Because these clusters can be orders of magnitude brighter than the cell body, including them in the ROI data heavily skews background intensity analysis.
-3. **Substrate Background**: The dark diamond substrate which occupies the majority of a wide-field scan and contains scattered noise.
+The dim diffuse fluorescence is now used only as a coarse bounding region. It
+helps reject substrate background and limits where bright candidates may be
+accepted, but it is not the final ROI.
 
-The `ROISegmentationLogic` module precisely isolates the ROI.
-
-## Pipeline (Multi-Scale Adaptive Algorithm)
-
-The current pipeline uses an adaptive approach specifically designed to handle the large fields of view and varying scales of 200×200 µm scans:
+## Pipeline
 
 ### 1. Adaptive Background Estimation
-A large median filter (kernel ~25 px) is applied to the raw fluorescence image. At 1 µm/px resolution, this kernel smooths over the cells (typically 10-30 µm diameter) and captures the slowly varying diamond substrate background.
+
+A large median filter estimates the slowly varying substrate background from
+the raw fluorescence image.
 
 ### 2. Background Subtraction
-The estimated background is subtracted from the original image, isolating the auto-fluorescent cell signal and bright spikes from the dark substrate.
 
-### 3. Iterative Spike Removal (Sigma-Clipping)
-To prevent extremely bright NV clusters from biasing the cell detection, we use iterative sigma-clipping on the background-subtracted signal:
-- We compute the median and MAD (Median Absolute Deviation) of the signal.
-- Pixels brighter than `Median + 4*Sigma` are flagged as spikes.
-- This is repeated 3 times.
-- The flagged spikes are dilated slightly to cover their optical halos, and then zeroed out in the working image.
+The estimated background is subtracted from the raw signal. Negative values are
+clipped to zero so downstream stages operate on positive contrast.
 
-### 4. Multi-scale Smoothing
-The despiked signal is smoothed using a Gaussian filter whose sigma is tuned to the expected cell scale (e.g., `sigma=6.0` pixels). This produces a clean, continuous intensity map where cells appear as smooth blobs.
+### 3. Despiking Before Smoothing
 
-### 5. Adaptive Thresholding
-An Otsu threshold (or a 65th percentile fallback) is computed strictly on the non-zero (non-substrate) regions of the smoothed image to generate a raw binary mask.
+A median filter suppresses isolated one-pixel intensity spikes before Gaussian
+smoothing. This prevents tiny speckles from expanding into large false diffuse
+regions.
 
-### 6. Connected Component Analysis & Size Filtering (Key Step)
-Unlike simple thresholding which often over-segments the background, we run connected component labeling on the raw mask to evaluate each blob individually. A blob is accepted as a true cell only if:
-- **Minimum Area**: Area >= 50 µm² (rejects small noise artifacts).
-- **Maximum Area**: Area <= 70% of the image (rejects massive substrate regions).
-- **Compactness**: `(4 * π * Area) / Perimeter² >= 0.05` (rejects thin linear artifacts, ensures somewhat round/elliptical shapes).
+### 4. Diffuse Region Localization
 
-### 7. Morphological Refinement
-The accepted cell regions are refined using morphological closing (to fill holes) and opening (to smooth boundaries). This produces the `cell_mask`.
+The despiked image is smoothed at a broad scale and adaptively thresholded.
+Connected components are filtered by:
 
-### 8. Bright Spot Exclusion
-Within each accepted cell, we re-evaluate the raw intensities. Any pixels exceeding a robust statistical threshold (`Median_cell + 5*Sigma_cell`) are identified as bright clusters. These are dilated and subtracted from the `cell_mask` to produce the final `roi_mask`.
+- minimum diffuse-region area (`min_cell_area_um2`)
+- maximum allowed image fraction (`max_cell_fraction`)
+- compactness (`min_compactness`)
 
-## Output
+The result is `diffuse_region_mask`. This is a bounding mask, not the final
+cell ROI.
 
-The filtered data is exported to `_roi_filtered.dat`, where all pixels outside the `ROI Mask` are set to `0.0`. The logic module also returns the component labels and per-cell statistics (area, centroid, mean intensity, etc.) for downstream analysis.
+### 5. Bright Cell Candidate Detection
+
+Within `diffuse_region_mask`, the algorithm thresholds the original
+fluorescence using a robust median/MAD threshold:
+
+`median + bright_spot_sigma * sigma`
+
+The resulting bright candidate mask is dilated by `bright_spot_dilate` pixels
+to recover the local bright cell area. This intermediate output is
+`raw_bright_spots`.
+
+### 6. Bright Candidate Size and Shape Filtering
+
+Bright candidates are then connected-component filtered independently from the
+diffuse bounding regions. This is important because a valid diffuse region may
+be large while the true bright cellular signal is smaller.
+
+The final bright-cell minimum area is controlled by
+`min_bright_cell_area_um2`. Small bright speckles can therefore be rejected
+without forcing the same size threshold used for diffuse regions.
+
+### 7. Final ROI Export
+
+The final `roi_mask` is the filtered bright cell mask. Exported
+`_roi_filtered.dat` files preserve the original fluorescence values inside this
+mask and set all pixels outside it to `0.0`.
+
+## Diagnostic Plot Meaning
+
+The confocal verification plot uses four panels:
+
+1. Original fluorescence image.
+2. Diffuse Region Mask (Bounding areas).
+3. Cell Mask (Bright NV Clusters).
+4. Final ROI (Original Cell Fluorescence).
+
+Panel 4 should visually match the accepted bright regions from Panel 3, but
+rendered with the original input fluorescence colors/counts.
+
+## Tuning Notes
+
+`min_cell_area_um2` controls the broad diffuse bounding regions. Increase it if
+large background haze is being accepted, or decrease it if valid cells are not
+localized at all.
+
+`min_bright_cell_area_um2` controls the final bright cell components. Increase
+it to reject more small bright speckles; decrease it if valid bright cells are
+being removed after they appear correctly in the third diagnostic panel.
+
+`bright_spot_sigma` controls how bright a candidate must be relative to its
+diffuse region. Lower values include more of the bright cellular signal; higher
+values keep only the strongest cores.
