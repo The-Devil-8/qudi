@@ -50,6 +50,8 @@ Automates the process of locating NV centers in a diamond sample by:
 | 15 | [**Phased Implementation Plan**](15_phased_implementation_plan.md) | **Next steps: 7 phases, module wiring, standalone→connected checklist** |
 | 16 | [**Testing Data Requirements**](16_testing_data_requirements.md) | **Dataset catalog, gaps in 200 µm data, acquisition & annotation checklist** |
 | 17 | [**Algorithm Optimization**](17_algorithm_optimization.md) | **Cell boundary, ROI, cluster bboxes, CIP tuning parameters & metrics** |
+| 18 | [Scan Region Queue](18_scan_region_queue.md) | Documentation for ScanRegionQueue module (multi-scale automation) |
+| 19 | [Merged Legacy Modules](19_merged_legacy_modules.md) | Dispositions and explanations for modules pulled from docs branch |
 
 ## Quick Start
 
