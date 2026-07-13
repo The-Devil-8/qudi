@@ -1535,7 +1535,7 @@ class PicoHarp300(Base, SlowCounterInterface, FastCounterInterface):
             _RWTimeout = 2
             n_read_samples = daq.int32()
 
-            samples = np.int(np.ceil(self.ACQtime / self.period))
+            samples = int(np.ceil(self.ACQtime / self.period))
 
             self.count_data = np.empty((1, 2 * samples), dtype=np.uint32)
             self.count_data2 = np.empty((1, 2 * samples), dtype=np.uint32)

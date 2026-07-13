@@ -1,0 +1,44 @@
+name: qudi
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - python=3.9
+  - pip
+  - setuptools
+  - wheel
+  # Core data science and numerical
+  - numpy
+  - scipy
+  - matplotlib
+  - pillow
+  # GUI Framework
+  - pyqt=5
+  - sip
+  - qtconsole
+  # Development and IDE
+  - ipython
+  - jupyter
+  - notebook
+  - cython
+  # Utility
+  - pyyaml
+  - lxml
+  - pyzmq
+  - colorama
+  # Pip specific dependencies
+  - pip:
+    - asteval
+    - fysom
+    - gitpython
+    - lmfit
+    - nidaqmx
+    - plumbum
+    - pydaqmx
+    - pyvisa
+    - qtpy
+    - rpyc
+    - ruamel.yaml
+    - pyserial
+    - uncertainties
+    - pyqtgraph

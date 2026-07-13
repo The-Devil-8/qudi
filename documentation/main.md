@@ -20,6 +20,8 @@
    * [How to use the logger](@ref logger_usage)
    * [Graphical User Interface Design Concept](@ref uiguidelines)
    * [State machines in various components](@ref statemachines)
+   * [Student Guide](student_guide/INDEX.md)
+   * [Q-Diamond vs Qudi Comparison](q_diamond_comparison/INDEX.md)
 
 * Configuration
     * [Using a Config file](@ref config-explanation)
@@ -43,4 +45,7 @@
 
 * Interface documentation
     * [Pulser Interface](@ref pulser_interface)
+
+* Hardware documentation
+    * [Swabian TimeTagger Fast Counter](@ref timetagger_fast_counter)
 

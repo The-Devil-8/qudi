@@ -366,7 +366,7 @@ class PoiManagerLogic(GenericLogic):
     _active_poi = StatusVar(default=None)
     _move_scanner_after_optimization = StatusVar(default=True)
     _poi_threshold = StatusVar(default=5)
-    _poi_diameter = StatusVar(default=1.5)
+    _poi_diameter = StatusVar(default=1.5e-6)
 
     # Signals for connecting modules
     sigRefocusStateUpdated = QtCore.Signal(bool)  # is_active
@@ -1181,78 +1181,194 @@ class PoiManagerLogic(GenericLogic):
         return
 
     def _spot_filter(self, scan):
+        """Calculate the spot filter size in pixels based on the POI diameter.
+
+        @param np.ndarray scan: 2D scan image array
+        @return int: filter size in pixels
+        """
         pixel_num = len(scan)
         x_range = self.roi_scan_image_extent[0]
         pixel_size = (x_range[1] - x_range[0]) / pixel_num
         spot_size = self._poi_diameter
         arr_size = int(spot_size / pixel_size)
-        return arr_size
+        return max(3, arr_size if arr_size % 2 == 1 else arr_size + 1)
 
     def _is_spot_shape(self, local_arr):
-        unspot_e = 0
-        ensem_e = 0
-        len_arr = len(local_arr)
-        mid_f = int(0.5 * len_arr)
-        hm_local_arr = local_arr[mid_f].mean()
-        vm_local_arr = local_arr[:, mid_f].mean()
-        for i in range(0, len_arr):
-            if local_arr[i].mean() > hm_local_arr:
-                ensem_e += 1
-            if local_arr[:, i].mean() > vm_local_arr:
-                ensem_e += 1
-            if hm_local_arr > vm_local_arr * 1.2:
-                unspot_e += 1
-            if vm_local_arr > hm_local_arr * 1.2:
-                unspot_e += 1
-        if ensem_e > 4:
-            return False
-        elif unspot_e > 1:
-            return False
-        else:
-            return True
+        """Check if a local image patch looks like a circular spot using CIP analysis.
+
+        Uses ConfocalImageAnalysis.validate_spot_shape for improved circularity
+        checking compared to the original heuristic method.
+
+        @param np.ndarray local_arr: 2D local image patch around a candidate
+        @return bool: True if the patch looks like a circular spot
+        """
+        from logic.image_analysis import ConfocalImageAnalysis
+        cip = ConfocalImageAnalysis()
+        mid = len(local_arr) // 2
+        radius = max(1, mid - 1)
+        is_valid, _ = cip.validate_spot_shape(local_arr, mid, mid, radius)
+        return is_valid
 
     def _local_max(self, scan):
-        scan = np.asarray(scan, order="C")  # scan has to be a 2-D array
+        """Find local maxima in the scan image using CIP-based detection.
+
+        Replaces the original O(n⁴) nested loop with scipy-based local maximum
+        detection, background subtraction, and shape filtering from
+        ConfocalImageAnalysis.
+
+        @param np.ndarray scan: 2D fluorescence intensity array
+        @return tuple(list, list): (row_indices, col_indices) of local maxima
+        """
+        from logic.image_analysis import ConfocalImageAnalysis
+        cip = ConfocalImageAnalysis()
+        scan = np.asarray(scan, dtype=float, order="C")
         filter_size = self._spot_filter(scan)
-        scan_m = scan.mean()
-        mid_f = int(filter_size / 2)
+        radius = max(1, filter_size // 2)
+
+        # CIP Stage 1: Background subtraction
+        background = cip.estimate_background(scan, kernel_size=max(filter_size * 3, 15))
+        corrected = cip.subtract_background(scan, background)
+
+        # CIP Stage 2: Noise estimation and thresholding
+        noise_sigma = cip.estimate_noise_level(corrected)
+        threshold = max(
+            scan.mean() * self._poi_threshold * 0.5,
+            3.0 * noise_sigma
+        )
+        mask = cip.threshold_intensity(corrected, threshold)
+
+        # CIP Stage 3: Local maxima detection
+        maxima_positions = cip.detect_local_maxima(corrected, mask, filter_size)
+
+        # CIP Stage 4: Shape validation
         xc = []
         yc = []
-        for i in range(0, len(scan) - filter_size):
-            for j in range(0, len(scan[i]) - filter_size):
-                local_arr = scan[i:i + filter_size, j:j + filter_size]
-                local_arr = np.asarray(local_arr)
-                arr_threshold = scan_m * self._poi_threshold * 0.5
-                if scan[i + mid_f][j + mid_f] == local_arr.max() and self._is_spot_shape(local_arr) and local_arr.mean() > arr_threshold:
-                    xc.append(i + mid_f)
-                    yc.append(j + mid_f)
+        for pos in maxima_positions:
+            row, col = int(pos[0]), int(pos[1])
+            is_valid, _ = cip.validate_spot_shape(corrected, row, col, radius)
+            if is_valid:
+                xc.append(row)
+                yc.append(col)
+
+        # CIP Stage 5: Clustering (merge nearby detections)
+        if len(xc) > 1:
+            positions = np.array(list(zip(xc, yc)), dtype=float)
+            intensities = np.array([corrected[r, c] for r, c in zip(xc, yc)])
+            clustered = cip.cluster_detections(positions, intensities, min_distance=filter_size)
+            xc = [int(pos[0]) for pos, _ in clustered]
+            yc = [int(pos[1]) for pos, _ in clustered]
+
         return xc, yc
 
-    def auto_catch_poi(self):
-        scan_image = self.roi_scan_image.T
+    def detect_candidates_from_image(self, scan_image=None, threshold_sigma=5.0):
+        """Detect NV center candidates from the scan image without adding them as POIs.
+
+        This is an enhanced version of auto_catch_poi that returns candidate
+        positions and metadata without modifying the POI list. Designed for
+        use by AutoNVFinderLogic.
+
+        Uses the full CIP (Color Image Processing) pipeline from
+        ConfocalImageAnalysis: background subtraction, noise estimation,
+        thresholding, local maxima, shape validation, clustering, and
+        sub-pixel Gaussian refinement.
+
+        @param np.ndarray scan_image: optional 2D fluorescence array (uses ROI image if None)
+        @param float threshold_sigma: detection threshold in noise sigma units
+
+        @return list[dict]: list of candidate dicts with keys:
+            'position': [x, y, z] in meters
+            'pixel_row': row index in image
+            'pixel_col': col index in image
+            'intensity': peak fluorescence counts/s
+            'confidence': detection confidence [0, 1]
+        """
+        from logic.image_analysis import ConfocalImageAnalysis
+        cip = ConfocalImageAnalysis()
+
+        if scan_image is None:
+            scan_image = self.roi_scan_image.T
+
+        scan_image = np.asarray(scan_image, dtype=float)
+        if scan_image.size == 0:
+            return []
+
         x_range = self.roi_scan_image_extent[0]
         y_range = self.roi_scan_image_extent[1]
-        x_axis = np.arange(x_range[0], x_range[1], (x_range[1] - x_range[0]) / len(scan_image))
-        y_axis = np.arange(y_range[0], y_range[1], (y_range[1] - y_range[0]) / len(scan_image[0]))
-
-        for i in range(0, len(scan_image)):
-            for j in range(0, len(scan_image[i])):
-                scan_image[i][j] = int(scan_image[i][j])  # data here somehow needs to be reset, otherwise shit happens.
-
-        threshold = scan_image.mean() * self._poi_threshold
-
-        xc1, yc1 = self._local_max(scan_image)
-        xc2 = []
-        yc2 = []
-        for i in range(0, len(xc1)):
-            if scan_image[xc1[i], yc1[i]] > threshold:
-                xc2.append(xc1[i])
-                yc2.append(yc1[i])
-
-        pois = np.zeros((len(xc2), 3))
+        nrows, ncols = scan_image.shape
+        x_axis = np.linspace(x_range[0], x_range[1], ncols)
+        y_axis = np.linspace(y_range[0], y_range[1], nrows)
         z = self.scanner_position[2]
-        for i in range(0, len(pois)):
-            pois[i] = [x_axis[xc2[i]], y_axis[yc2[i]], z]
-            self.add_poi(pois[i])
+
+        filter_size = self._spot_filter(scan_image)
+        radius = max(1, filter_size // 2)
+
+        # Full CIP pipeline
+        background = cip.estimate_background(scan_image, kernel_size=max(filter_size * 3, 15))
+        corrected = cip.subtract_background(scan_image, background)
+        noise_sigma = cip.estimate_noise_level(corrected)
+
+        if noise_sigma <= 0:
+            noise_sigma = 1.0
+
+        threshold = threshold_sigma * noise_sigma
+        mask = cip.threshold_intensity(corrected, threshold)
+        maxima_positions = cip.detect_local_maxima(corrected, mask, filter_size)
+
+        # Shape validation
+        valid = []
+        for pos in maxima_positions:
+            row, col = int(pos[0]), int(pos[1])
+            is_valid, circ = cip.validate_spot_shape(corrected, row, col, radius)
+            if is_valid:
+                valid.append((row, col, circ))
+
+        if not valid:
+            return []
+
+        # Clustering
+        positions = np.array([(r, c) for r, c, _ in valid], dtype=float)
+        intensities = np.array([corrected[r, c] for r, c, _ in valid])
+        circularities = {(r, c): circ for r, c, circ in valid}
+        clustered = cip.cluster_detections(positions, intensities, min_distance=filter_size)
+
+        # Build candidate list with sub-pixel refinement
+        candidates = []
+        for (pos, intensity) in clustered:
+            row, col = int(pos[0]), int(pos[1])
+            refined = cip.refine_position_gaussian_2d(
+                corrected, row, col, radius,
+                x_coords=x_axis, y_coords=y_axis)
+
+            x_phys = refined['x'] if refined['x'] is not None else float(x_axis[min(col, ncols - 1)])
+            y_phys = refined['y'] if refined['y'] is not None else float(y_axis[min(row, nrows - 1)])
+
+            circ = circularities.get((row, col), 0.5)
+            snr = intensity / noise_sigma
+            confidence = cip.compute_detection_confidence(snr, circ, refined['quality'])
+
+            candidates.append({
+                'position': [x_phys, y_phys, z],
+                'pixel_row': row,
+                'pixel_col': col,
+                'intensity': float(intensity),
+                'confidence': float(confidence)
+            })
+
+        # Sort by intensity (brightest first)
+        candidates.sort(key=lambda c: c['intensity'], reverse=True)
+        return candidates
+
+    def auto_catch_poi(self):
+        """Automatically detect and add POIs from the current confocal scan image.
+
+        Uses CIP (Color Image Processing) analysis from ConfocalImageAnalysis
+        for improved detection quality compared to the original simple
+        threshold-based approach. Includes background subtraction, noise-aware
+        thresholding, spot shape validation, and spatial clustering.
+        """
+        candidates = self.detect_candidates_from_image()
+
+        for candidate in candidates:
+            self.add_poi(np.array(candidate['position']))
             if self.poi_nametag is None:
                 time.sleep(0.1)

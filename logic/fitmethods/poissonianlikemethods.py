@@ -24,7 +24,7 @@ top-level directory of this distribution and at <https://github.com/Ulm-IQO/qudi
 import numpy as np
 from lmfit.models import Model
 from lmfit import Parameters
-from scipy.signal import gaussian
+from scipy.signal.windows import gaussian
 from scipy.ndimage import filters
 from scipy.interpolate import InterpolatedUnivariateSpline
 from collections import OrderedDict
@@ -112,11 +112,11 @@ def make_poissonian_model(self, prefix=None):
                        'cannot be used as a prefix and will be ignored for now.'
                        'Correct that!'.format(prefix, type(prefix)))
 
-        poissonian_model = Model(poisson_function, independent_vars='x')
+        poissonian_model = Model(poisson_function, independent_vars=['x'])
 
     else:
 
-        poissonian_model = Model(poisson_function, independent_vars='x',
+        poissonian_model = Model(poisson_function, independent_vars=['x'],
                                  prefix=prefix)
 
     poissonian_ampl_model = amplitude_model * poissonian_model

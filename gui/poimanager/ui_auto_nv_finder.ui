@@ -1,0 +1,279 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>AutoNVFinderDockWidget</class>
+ <widget class="QDockWidget" name="AutoNVFinderDockWidget">
+  <property name="windowTitle">
+   <string>Auto NV Finder</string>
+  </property>
+  <widget class="QWidget" name="dockWidgetContents">
+   <layout class="QVBoxLayout" name="verticalLayout_main">
+
+    <!-- Control Panel -->
+    <item>
+     <layout class="QHBoxLayout" name="controlLayout">
+      <item>
+       <widget class="QPushButton" name="start_auto_find_PushButton">
+        <property name="text">
+         <string>▶ Start Auto Find</string>
+        </property>
+        <property name="toolTip">
+         <string>Start automated NV center detection and optimization</string>
+        </property>
+        <property name="minimumHeight">
+         <number>30</number>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="stop_auto_find_PushButton">
+        <property name="text">
+         <string>⏹ Stop</string>
+        </property>
+        <property name="enabled">
+         <bool>false</bool>
+        </property>
+        <property name="toolTip">
+         <string>Stop the auto-finder after current candidate</string>
+        </property>
+        <property name="minimumHeight">
+         <number>30</number>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLabel" name="state_Label">
+        <property name="text">
+         <string>Idle</string>
+        </property>
+        <property name="styleSheet">
+         <string>font-weight: bold;</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </item>
+
+    <!-- Progress Bar -->
+    <item>
+     <widget class="QProgressBar" name="progress_ProgressBar">
+      <property name="value">
+       <number>0</number>
+      </property>
+      <property name="format">
+       <string>%v / %m candidates</string>
+      </property>
+     </widget>
+    </item>
+
+    <!-- Detection Parameters Group -->
+    <item>
+     <widget class="QGroupBox" name="detection_params_GroupBox">
+      <property name="title">
+       <string>Detection Parameters</string>
+      </property>
+      <layout class="QGridLayout" name="paramsGridLayout">
+       <item row="0" column="0">
+        <widget class="QLabel" name="threshold_Label">
+         <property name="text">
+          <string>Threshold σ:</string>
+         </property>
+        </widget>
+       </item>
+       <item row="0" column="1">
+        <widget class="QDoubleSpinBox" name="threshold_sigma_DoubleSpinBox">
+         <property name="minimum">
+          <double>1.000000000000000</double>
+         </property>
+         <property name="maximum">
+          <double>50.000000000000000</double>
+         </property>
+         <property name="singleStep">
+          <double>0.500000000000000</double>
+         </property>
+         <property name="value">
+          <double>5.000000000000000</double>
+         </property>
+         <property name="toolTip">
+          <string>Detection threshold in units of noise standard deviation. Higher = fewer false positives.</string>
+         </property>
+        </widget>
+       </item>
+       <item row="1" column="0">
+        <widget class="QLabel" name="min_intensity_Label">
+         <property name="text">
+          <string>Min Intensity:</string>
+         </property>
+        </widget>
+       </item>
+       <item row="1" column="1">
+        <widget class="QSpinBox" name="min_intensity_SpinBox">
+         <property name="minimum">
+          <number>0</number>
+         </property>
+         <property name="maximum">
+          <number>1000000</number>
+         </property>
+         <property name="singleStep">
+          <number>100</number>
+         </property>
+         <property name="value">
+          <number>1000</number>
+         </property>
+         <property name="suffix">
+          <string> c/s</string>
+         </property>
+         <property name="toolTip">
+          <string>Minimum absolute fluorescence counts/second for a valid NV candidate.</string>
+         </property>
+        </widget>
+       </item>
+       <item row="2" column="0">
+        <widget class="QLabel" name="spot_diameter_Label">
+         <property name="text">
+          <string>Spot Diameter:</string>
+         </property>
+        </widget>
+       </item>
+       <item row="2" column="1">
+        <widget class="QDoubleSpinBox" name="spot_diameter_DoubleSpinBox">
+         <property name="minimum">
+          <double>0.100000000000000</double>
+         </property>
+         <property name="maximum">
+          <double>50.000000000000000</double>
+         </property>
+         <property name="singleStep">
+          <double>0.100000000000000</double>
+         </property>
+         <property name="value">
+          <double>1.500000000000000</double>
+         </property>
+         <property name="suffix">
+          <string> μm</string>
+         </property>
+         <property name="decimals">
+          <number>1</number>
+         </property>
+         <property name="toolTip">
+          <string>Expected NV center spot diameter in micrometers. Sets the local detection neighborhood.</string>
+         </property>
+        </widget>
+       </item>
+       <item row="0" column="2">
+        <widget class="QCheckBox" name="auto_register_CheckBox">
+         <property name="text">
+          <string>Auto Register POIs</string>
+         </property>
+         <property name="checked">
+          <bool>true</bool>
+         </property>
+         <property name="toolTip">
+          <string>Automatically add confirmed NV centers as POIs in the POI Manager.</string>
+         </property>
+        </widget>
+       </item>
+       <item row="1" column="2">
+        <widget class="QCheckBox" name="z_optimization_CheckBox">
+         <property name="text">
+          <string>Z Optimization</string>
+         </property>
+         <property name="checked">
+          <bool>true</bool>
+         </property>
+         <property name="toolTip">
+          <string>Also optimize the Z (focus) axis for each candidate.</string>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </item>
+
+    <!-- Candidate Table -->
+    <item>
+     <widget class="QGroupBox" name="candidates_GroupBox">
+      <property name="title">
+       <string>Candidates</string>
+      </property>
+      <layout class="QVBoxLayout" name="candidatesLayout">
+       <item>
+        <widget class="QTableWidget" name="candidates_TableWidget">
+         <property name="columnCount">
+          <number>5</number>
+         </property>
+         <property name="alternatingRowColors">
+          <bool>true</bool>
+         </property>
+         <property name="selectionBehavior">
+          <enum>QAbstractItemView::SelectRows</enum>
+         </property>
+         <property name="selectionMode">
+          <enum>QAbstractItemView::SingleSelection</enum>
+         </property>
+         <property name="editTriggers">
+          <set>QAbstractItemView::NoEditTriggers</set>
+         </property>
+         <column>
+          <property name="text">
+           <string>#</string>
+          </property>
+          <property name="width">
+           <number>30</number>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Name</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Position (μm)</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Intensity</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Status</string>
+          </property>
+         </column>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </item>
+
+    <!-- Log Panel -->
+    <item>
+     <widget class="QGroupBox" name="log_GroupBox">
+      <property name="title">
+       <string>Log</string>
+      </property>
+      <layout class="QVBoxLayout" name="logLayout">
+       <item>
+        <widget class="QTextEdit" name="log_TextEdit">
+         <property name="readOnly">
+          <bool>true</bool>
+         </property>
+         <property name="maximumHeight">
+          <number>120</number>
+         </property>
+         <property name="styleSheet">
+          <string>font-family: Consolas, monospace; font-size: 10px;</string>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </item>
+
+   </layout>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

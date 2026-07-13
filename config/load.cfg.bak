@@ -1,0 +1,6 @@
+# Original load.cfg backup
+# The original config was:
+# configfile: C:/Users/SingleNV/qudi/config/example/default.cfg
+#
+# It was changed to point to the auto NV finder test config.
+# To restore: replace the current load.cfg content with the line above.

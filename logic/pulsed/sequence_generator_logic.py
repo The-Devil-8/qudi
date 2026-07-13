@@ -1760,7 +1760,7 @@ class SequenceGeneratorLogic(GenericLogic):
 
         # Calculate the byte size per sample.
         # One analog sample per channel is 4 bytes (np.float32) and one digital sample per channel
-        # is 1 byte (np.bool).
+        # is 1 byte (bool).
         bytes_per_sample = len(ensemble_info['analog_channels']) * 4 + len(
             ensemble_info['digital_channels'])
 

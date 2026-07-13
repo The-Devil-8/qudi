@@ -253,7 +253,7 @@ class SingleShotLogic(GenericLogic):
                 temp_list = []
             jj = 0
             while jj < NN:
-                sum_ind = np.linspace(jj, jj + count_var - 1, count_var, dtype=np.int)
+                sum_ind = np.linspace(jj, jj + count_var - 1, count_var, dtype=int)
                 # make sure we don't try to adress not reserved memory
                 jj += count_var
                 if sum_ind[-1] < NN:

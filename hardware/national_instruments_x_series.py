@@ -1025,25 +1025,25 @@ class NationalInstrumentsXSeries(Base, SlowCounterInterface, ConfocalScannerInte
             if not(self._scanner_position_ranges[0][0] <= x <= self._scanner_position_ranges[0][1]):
                 self.log.error('You want to set x out of range: {0:f}.'.format(x))
                 return -1
-            self._current_position[0] = np.float(x)
+            self._current_position[0] = float(x)
 
         if y is not None:
             if not(self._scanner_position_ranges[1][0] <= y <= self._scanner_position_ranges[1][1]):
                 self.log.error('You want to set y out of range: {0:f}.'.format(y))
                 return -1
-            self._current_position[1] = np.float(y)
+            self._current_position[1] = float(y)
 
         if z is not None:
             if not(self._scanner_position_ranges[2][0] <= z <= self._scanner_position_ranges[2][1]):
                 self.log.error('You want to set z out of range: {0:f}.'.format(z))
                 return -1
-            self._current_position[2] = np.float(z)
+            self._current_position[2] = float(z)
 
         if a is not None:
             if not(self._scanner_position_ranges[3][0] <= a <= self._scanner_position_ranges[3][1]):
                 self.log.error('You want to set a out of range: {0:f}.'.format(a))
                 return -1
-            self._current_position[3] = np.float(a)
+            self._current_position[3] = float(a)
 
         # the position has to be a vstack
         my_position = np.vstack(self._current_position)
