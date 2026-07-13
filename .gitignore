@@ -36,3 +36,9 @@
 # Experimental data files
 *.dat
 __pycache__/
+
+# Pdf's and Images(Test Data)
+
+*.Pdf
+*.png
+
