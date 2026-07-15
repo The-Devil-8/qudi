@@ -18,10 +18,12 @@
 4. **POI Extraction** (`logic/poi_extractor.py`) — **DONE**
    - Runs Confocal Image Processing (CIP) constrained to the Processable Zone.
    - Extracts individual diffraction-limited NV candidates, scores them, and filters them adaptively.
-5. **Candidate Verification** (`logic/nv_candidate_verifier.py`) — **PLANNING PHASE**
-   - Will wrap `OptimizerLogic` to sequentially physically refocus on each candidate from `POIExtractor`.
-   - Will gate on 2D Gaussian fit (R²) and displacement (did the optimizer wander too far?).
-   - Will register confirmed candidates into `PoiManagerLogic`.
+5. **Candidate Verification** (`logic/nv_candidate_verifier.py`) — **DIAGNOSTIC IMPLEMENTED**
+   - Wraps unmodified legacy `OptimizerLogic` for two-to-four correlated refocus attempts.
+   - Does not gate on fit quality or seed displacement until live calibration data has been reviewed.
+   - Archives raw legacy optimizer scans and independently re-fits XY data through bounded `Optimizer2D`.
+   - Records signed X/Y and radial seed offsets, sampled bounds, edge flags, fit failures, timeouts, and manifests.
+   - Is deliberately `diagnostic_only=True`: no automatic acceptance/rejection or POI registration until live calibration is reviewed.
 
 ## 2. Core Intuition & Physics Considerations
 
@@ -47,7 +49,7 @@ Because the Processable Zone has its macro-clusters explicitly removed by the `C
 
 ## 3. Immediate Next Steps
 
-1. **Review implementation plan** (`implementation_plan.md`) for `NVCandidateVerifier` (Doc 21).
-2. Write `documentation/automation/21_nv_candidate_verifier.md`.
-3. Implement `logic/nv_candidate_verifier.py`.
-4. Implement `tests/test_nv_candidate_verifier.py` with mocked optimizer signals to test the async state machine.
+1. Run the live seed-offset/resolution calibration procedure in `21_nv_candidate_verifier.md` and preserve its audit directories.
+2. Review the bounded-fit, edge, offset, and repeatability plots from those audit logs.
+3. Repair or replace the legacy optimizer result contract only after calibration identifies the failure mode.
+4. Add calibrated acceptance/rejection and POI-registration policy only after that review.

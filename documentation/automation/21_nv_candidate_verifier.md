@@ -2,14 +2,17 @@
 
 ## Status and scope
 
-**Status:** design ready for implementation.  This document replaces the
-single-attempt proposal in `NVVerifier.md`.
+**Status:** diagnostic implementation available.  This document replaces the
+single-attempt proposal in `NVVerifier.md`.  The implementation intentionally
+does not yet register, accept, or reject POIs: it collects calibrated evidence
+first.
 
-`NVCandidateVerifier` is the asynchronous bridge from `POIExtractor` to
-`OptimizerLogic` and `PoiManagerLogic`.  It verifies that a candidate is a
-**reproducibly localizable fluorescent spot** before it is registered as a
-POI.  It does **not** establish that a spot is a single emitter or that it is
-an NV-minus centre: ODMR and HBT are explicitly out of scope for version 1.
+`NVCandidateVerifier` is the asynchronous diagnostic bridge from
+`POIExtractor` to `OptimizerLogic`.  It collects repeated evidence that a
+candidate is a **reproducibly localizable fluorescent spot** before any future
+POI-registration policy is enabled.  It does **not** establish that a spot is
+a single emitter or that it is an NV-minus centre: ODMR and HBT are explicitly
+out of scope for version 1.
 
 This distinction must be visible in the UI, logs, and result types.  The
 result `optically_verified` means "repeatable optical localization passed the
@@ -501,13 +504,12 @@ fluorescent localization) until the future spin-validation stage promotes it.
 
 ## Qudi module surface
 
-`NVCandidateVerifier` should be a `GenericLogic` module because it owns Qt
-signals, hardware activity, status variables, and cancellation.  Its minimal
-connectors are:
+The diagnostic implementation is `logic/nv_candidate_verifier.py`. It is a
+`GenericLogic` module that owns Qt signals, hardware activity, cancellation,
+and audit persistence. It does **not** modify `logic/optimizer_logic.py`.
 
 ```python
 optimizerlogic = Connector(interface='OptimizerLogic')
-poimanagerlogic = Connector(interface='PoiManagerLogic')
 savelogic = Connector(interface='SaveLogic', optional=True)
 ```
 
@@ -529,6 +531,107 @@ sigVerificationError = QtCore.Signal(str, str)
 Use `StatusVar` only for stable user-facing policy values.  Snapshot them into
 each `VerificationBatchResult` at start; changes made in the GUI must apply to
 the next batch, not halfway through a candidate.
+
+### Implemented diagnostic-only interface (current authority)
+
+The preceding data-model text describes the future gated verifier.  The
+currently implemented module is intentionally narrower: it has **no**
+`PoiManagerLogic` connector, does not accept/reject or register a POI, and
+does not add ODMR.  Add it to the active integrated-hardware configuration as:
+
+```yaml
+logic:
+    nv_candidate_verifier:
+        module.Class: 'nv_candidate_verifier.NVCandidateVerifier'
+        remoteaccess: True
+        connect:
+            optimizerlogic: 'optimizerlogic'
+            savelogic: 'savelogic'     # optional, but strongly recommended
+```
+
+| Status variable | Default | Role |
+|---|---:|---|
+| `diagnostic_only` | `True` | Required. Setting it false raises an error; gates cannot silently activate. |
+| `minimum_attempts` | 2 | Normal bounded scans before `diagnostic_complete`. |
+| `maximum_attempts` | 4 | Retry budget for failed/edge re-analyses. |
+| `attempt_timeout_s` | 90 | Watchdog for one legacy optimizer call. |
+| `timeout_cleanup_s` | 10 | Extra wait after `stop_refocus()` before writing a terminal timeout audit. |
+| `audit_subdirectory` | `NVCandidateVerifier` | SaveLogic module-data directory name. |
+
+Call it asynchronously with `POICandidate` objects (or mappings containing
+`candidate_id`, `x`, `y`, and optional `z_estimate`):
+
+```python
+run_id = verifier.verify_batch(
+    extraction_result.strong_candidates,
+    run_context={
+        'source_scan': '20260706-1701-46_confocal_xy_data.dat',
+        'operator': 'initials',
+        'calibration_series': 'seed-offset-r10-r11-r16',
+    },
+)
+
+verifier.stop_verification()  # optional safe cancellation
+```
+
+Every attempt has a distinct caller tag,
+`nvverify_<UTC timestamp>_<run token>:<candidate-id>:aNN`; foreign optimizer
+completion events cannot advance this batch. The actual public signals are
+`sigVerificationProgress`, `sigCandidateVerificationUpdated`,
+`sigVerificationFinished`, and `sigVerificationError`.
+
+With SaveLogic connected, each run is retained at:
+
+```text
+.../NVCandidateVerifier/nvverify_<timestamp>_<token>/
+    manifest.json
+    attempt_<candidate-id>_a01.npz
+    attempt_<candidate-id>_a02.npz
+    ...
+```
+
+Without SaveLogic, the fallback is `data/NVCandidateVerifier/` below Qudi's
+working directory. The manifest is atomically rewritten after every attempt
+and includes run context, optimizer settings, seed, correlation tag, elapsed
+time, outcome, legacy returned position/sigmas, and bounded `Optimizer2D`
+analysis. The NPZ captures the raw legacy XY scan, actual X/Y coordinates, Z
+arrays/line where available, seed, and legacy return. This is the data to
+retain and share for later calibration analysis.
+
+`legacy_xy_fit_evidence` is only a diagnostic note. Positive legacy sigmas are
+not proof of a valid fit; zero/absent sigmas are explicitly indeterminate
+because legacy fallback uses the seed. `optimizer2_xy` is the independent
+bounded re-analysis, containing success, R2, sigma, sampled bounds, pitch,
+edge flag, or a failure reason.
+
+### Live integrated-hardware calibration procedure
+
+1. Add the configuration above and restart Qudi. Confirm `optimizerlogic`,
+   `savelogic`, and the verifier are active. Keep `diagnostic_only=True`; do
+   not connect this module to PoiManager.
+2. Before cell measurements, select one stable, isolated bright reference.
+   Keep laser power, objective, dwell/clock settings, XY/Z ranges, and the
+   optimizer sequence fixed per calibration series; write them in
+   `run_context`.
+3. For legacy resolutions 10, 11, and 16, run batches from seed offsets
+   `(0, 0)`, `(+/- half-pitch, 0)`, `(0, +/- half-pitch)`, and several larger
+   in-window offsets. Retain the original seed for every attempt in a batch.
+   Repeat each condition at least three times. Label boundary-clipped runs as
+   a separate series.
+4. Do not interpret `diagnostic_complete` as POI acceptance. It only means two
+   raw scans were independently bounded and were not edge fits. Timeouts, a
+   busy optimizer, malformed scans, and exhausted edge/fit budgets remain
+   `unresolved`, never rejected.
+5. Preserve the complete generated directory. `manifest.json` plus its NPZ
+   files can recreate seed-offset, support, fitted-centre, R2, sigma, and
+   repeatability plots without changing hardware state.
+
+`tests/test_nv_candidate_verifier.py` verifies bounded raw-scan analysis,
+2--4 retry policy, stable IDs, and audit persistence without hardware.
+`tests/test_nv_pipeline_integration.py` is the offline Confocal2 visual
+replay; it cannot replace live calibration because optimizer subscans were not
+stored. Automated gates, POI registration, deconfliction, and ODMR remain
+disabled until the calibration data is reviewed.
 
 ## Acceptance gates and calibration
 
