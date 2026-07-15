@@ -52,6 +52,8 @@ Automates the process of locating NV centers in a diamond sample by:
 | 17 | [**Algorithm Optimization**](17_algorithm_optimization.md) | **Cell boundary, ROI, cluster bboxes, CIP tuning parameters & metrics** |
 | 18 | [Scan Region Queue](18_scan_region_queue.md) | Documentation for ScanRegionQueue module (multi-scale automation) |
 | 19 | [Merged Legacy Modules](19_merged_legacy_modules.md) | Dispositions and explanations for modules pulled from docs branch |
+| 20 | [POI Extractor](20_poi_extractor_module.md) | Processable-zone candidate scoring, narrowing, and ranking |
+| 21 | [NVCandidateVerifier](21_nv_candidate_verifier.md) | Repeated asynchronous optical verification and auditable POI registration |
 
 ## Quick Start
 
@@ -73,6 +75,7 @@ Automates the process of locating NV centers in a diamond sample by:
 | `logic/image_analysis.py` | CIP utility functions |
 | `logic/image_rebuild_logic.py` | `.dat` → image visualization |
 | `logic/optimizer_logic.py` | Position optimization |
+| `logic/optimizer2.py` | Offline bounded 2-D Gaussian replay path; does not control hardware |
 | `logic/poi_manager_logic.py` | POI storage and tracking |
 | `logic/confocal_logic.py` | Confocal scan acquisition + FOV control |
 | `logic/automation.py` | Legacy task tree skeleton (not active pipeline) |
