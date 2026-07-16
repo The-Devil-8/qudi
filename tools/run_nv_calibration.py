@@ -16,7 +16,10 @@ BASE_Z = 5.0e-6
 # -----------------------------------------------------------------------------
 print("Connecting to running Qudi instance...")
 try:
-    conn = rpyc.connect('localhost', 12345)
+    conn = rpyc.connect('localhost', 12345, config={'allow_all_attrs': True})
+    # Start a background serving thread to process synchronous callbacks from the server 
+    # (like when Qudi calls .get() on the dictionary items).
+    bgsrv = rpyc.BgServingThread(conn)
     manager = conn.root
 except Exception as e:
     print(f"Failed to connect to Qudi: {e}")
@@ -82,6 +85,12 @@ try:
     print(f"Batch successfully started with run_id: {run_id}")
     print("The verifier is now running these in the background.")
     print("Check the Qudi SaveLogic output directory (usually under NVCandidateVerifier/) for the results.")
+    
+    # We must keep the script alive while Qudi is actively processing the batch 
+    # because Qudi might need to read values from the dictionaries over RPyC.
+    print("Keeping connection open for 5 seconds to ensure Qudi reads the data...")
+    time.sleep(5)
+    bgsrv.stop()
 except Exception as e:
     print(f"Failed to start verification batch: {e}")
     sys.exit(1)
