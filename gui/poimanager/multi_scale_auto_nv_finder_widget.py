@@ -188,7 +188,10 @@ class MultiScaleAutoNVFinderWidget(QtWidgets.QDockWidget):
 
     @QtCore.Slot(int, int)
     def _update_progress(self, processed, total):
-        self.progress_bar.setMaximum(total)
+        if total > 0:
+            self.progress_bar.setMaximum(total)
+        else:
+            self.progress_bar.setMaximum(1)
         self.progress_bar.setValue(processed)
         self._sync_regions_to_overlay()
 
@@ -196,6 +199,7 @@ class MultiScaleAutoNVFinderWidget(QtWidgets.QDockWidget):
     def _on_complete(self, stats):
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
+        self._update_state('idle')
         self.state_label.setText('State: Complete')
         self._sync_regions_to_overlay()
 
@@ -227,9 +231,10 @@ class MultiScaleAutoNVFinderWidget(QtWidgets.QDockWidget):
             status = getattr(region, 'status', 'queued')
             
             if rid not in self._region_markers:
-                # Create marker
-                pos = (region.center_x_m - region.width_m/2, region.center_y_m - region.height_m/2)
-                size = (region.width_m, region.height_m)
+                # Use bbox_physical (x_min, x_max, y_min, y_max) for precise positioning
+                x_min, x_max, y_min, y_max = region.bbox_physical
+                pos = (x_min, y_min)
+                size = (x_max - x_min, y_max - y_min)
                 
                 marker = RegionMarker(rid, pos, size, status=status, view_widget=self._view_widget)
                 marker.add_to_view()

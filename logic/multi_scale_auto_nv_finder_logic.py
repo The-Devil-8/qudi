@@ -139,7 +139,7 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
         self._set_state('macro_scanning')
         
         self.confocallogic().signal_xy_image_updated.connect(
-            self._on_macro_scan_complete, QtCore.Qt.QueuedConnection)
+            self._check_macro_scan_complete, QtCore.Qt.QueuedConnection)
         
         self.confocallogic().start_scanning(zscan=False)
 
@@ -155,12 +155,19 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
         self.log.info(message)
         self.sigLogMessage.emit('[{0}] {1}'.format(time.strftime('%H:%M:%S'), message))
 
-    def _on_macro_scan_complete(self):
-        # Disconnect signal
+    def _check_macro_scan_complete(self):
+        """Gate on module_state: signal_xy_image_updated fires per-line,
+        so we wait until the confocal module unlocks (scan finished)."""
+        if self.confocallogic().module_state() == 'locked':
+            return  # Scan still in progress, wait for next line signal
+        # Scan is done — disconnect and proceed
         try:
-            self.confocallogic().signal_xy_image_updated.disconnect(self._on_macro_scan_complete)
+            self.confocallogic().signal_xy_image_updated.disconnect(self._check_macro_scan_complete)
         except TypeError:
             pass
+        self._on_macro_scan_complete()
+
+    def _on_macro_scan_complete(self):
 
         if self._stop_requested:
             self._finish('Stopped during macro scan.')
@@ -170,6 +177,7 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
         self._log('MACRO scan complete. Running ROI segmentation...')
 
         image = self.confocallogic().xy_image
+        self.sigVisualUpdate.emit('Macro Scan', image)
         x_coords = image[0, :, 0]
         y_coords = image[:, 0, 1]
 
@@ -226,15 +234,21 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
         self.confocallogic().xy_resolution = int(scan_params['resolution'])
 
         self.confocallogic().signal_xy_image_updated.connect(
-            self._on_micro_scan_complete, QtCore.Qt.QueuedConnection)
+            self._check_micro_scan_complete, QtCore.Qt.QueuedConnection)
         
         self.confocallogic().start_scanning(zscan=False)
 
-    def _on_micro_scan_complete(self):
+    def _check_micro_scan_complete(self):
+        """Gate on module_state: wait until confocal module unlocks."""
+        if self.confocallogic().module_state() == 'locked':
+            return  # Scan still in progress
         try:
-            self.confocallogic().signal_xy_image_updated.disconnect(self._on_micro_scan_complete)
+            self.confocallogic().signal_xy_image_updated.disconnect(self._check_micro_scan_complete)
         except TypeError:
             pass
+        self._on_micro_scan_complete()
+
+    def _on_micro_scan_complete(self):
 
         if self._stop_requested:
             self._finish('Stopped during micro scan.')
