@@ -123,8 +123,16 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
         center_y = sum(self._original_scan_params['y_range']) / 2.0
         fov_m = float(self.coarse_fov_um) * 1e-6
 
-        self.confocallogic().image_x_range = [center_x - fov_m/2, center_x + fov_m/2]
-        self.confocallogic().image_y_range = [center_y - fov_m/2, center_y + fov_m/2]
+        x_min, x_max = self.confocallogic().x_range
+        y_min, y_max = self.confocallogic().y_range
+
+        x_start = max(x_min, center_x - fov_m/2)
+        x_end = min(x_max, center_x + fov_m/2)
+        y_start = max(y_min, center_y - fov_m/2)
+        y_end = min(y_max, center_y + fov_m/2)
+
+        self.confocallogic().image_x_range = [x_start, x_end]
+        self.confocallogic().image_y_range = [y_start, y_end]
         self.confocallogic().xy_resolution = int(self.coarse_resolution)
 
         self._log('Starting MACRO scan ({0} um FOV)...'.format(self.coarse_fov_um))
@@ -208,7 +216,9 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
         # Configure micro scan window
         scan_params = self._queue.compute_scan_parameters(
             region, margin_fraction=float(self.bbox_margin_fraction),
-            resolution=int(self.micro_resolution)
+            resolution=int(self.micro_resolution),
+            scanner_limits={'x_range': self.confocallogic().x_range,
+                            'y_range': self.confocallogic().y_range}
         )
         
         self.confocallogic().image_x_range = list(scan_params['x_range'])

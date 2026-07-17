@@ -1106,7 +1106,7 @@ class NationalInstrumentsXSeries(Base, SlowCounterInterface, ConfocalScannerInte
 
         if not isinstance(positions, (frozenset, list, set, tuple, np.ndarray, )):
             self.log.error('Given position list is no array type.')
-            return np.array([np.NaN])
+            return np.array([np.nan])
 
         vlist = []
         for i, position in enumerate(positions):
@@ -1123,7 +1123,7 @@ class NationalInstrumentsXSeries(Base, SlowCounterInterface, ConfocalScannerInte
                 self.log.error(
                     'Voltages ({0}, {1}) exceed the limit, the positions have to '
                     'be adjusted to stay in the given range.'.format(v.min(), v.max()))
-                return np.array([np.NaN])
+                return np.array([np.nan])
         return volts
 
     def get_scanner_position(self):

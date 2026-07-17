@@ -222,7 +222,7 @@ class MultiScaleAutoNVFinderWidget(QtWidgets.QDockWidget):
             return
             
         queue = self._logic._queue
-        for region in queue.queue + queue.processed_regions + queue.skipped_regions:
+        for region in queue.regions:
             rid = region.region_id
             status = getattr(region, 'status', 'queued')
             
