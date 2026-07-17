@@ -1,4 +1,4 @@
-name: qudi
+name: qudi-py39
 channels:
   - defaults
   - conda-forge
