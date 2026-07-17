@@ -2,6 +2,8 @@ import sys
 import time
 import rpyc
 
+import json
+
 # -----------------------------------------------------------------------------
 # Configuration
 # -----------------------------------------------------------------------------
@@ -17,9 +19,6 @@ BASE_Z = 5.0e-6
 print("Connecting to running Qudi instance...")
 try:
     conn = rpyc.connect('localhost', 12345, config={'allow_all_attrs': True})
-    # Start a background serving thread to process synchronous callbacks from the server 
-    # (like when Qudi calls .get() on the dictionary items).
-    bgsrv = rpyc.BgServingThread(conn)
     manager = conn.root
 except Exception as e:
     print(f"Failed to connect to Qudi: {e}")
@@ -81,16 +80,18 @@ run_context = {
 print(f"Submitting {len(candidates)} candidates for diagnostic verification...")
 
 try:
-    run_id = verifier.verify_batch(candidates, run_context=run_context)
+    # Convert local lists/dicts to strings, then load them natively on the Qudi side.
+    # This prevents RPyC from creating netrefs (transparent proxies) back to this script,
+    # meaning this script can exit immediately without breaking Qudi's background processing.
+    json_module = conn.modules.json
+    server_candidates = json_module.loads(json.dumps(candidates))
+    server_run_context = json_module.loads(json.dumps(run_context))
+
+    run_id = verifier.verify_batch(server_candidates, run_context=server_run_context)
     print(f"Batch successfully started with run_id: {run_id}")
-    print("The verifier is now running these in the background.")
+    print("The verifier is now running these independently in the background.")
     print("Check the Qudi SaveLogic output directory (usually under NVCandidateVerifier/) for the results.")
-    
-    # We must keep the script alive while Qudi is actively processing the batch 
-    # because Qudi might need to read values from the dictionaries over RPyC.
-    print("Keeping connection open for 5 seconds to ensure Qudi reads the data...")
-    time.sleep(5)
-    bgsrv.stop()
+    print("This script will now exit; Qudi will continue running the scans.")
 except Exception as e:
     print(f"Failed to start verification batch: {e}")
     sys.exit(1)

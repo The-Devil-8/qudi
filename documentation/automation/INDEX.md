@@ -54,6 +54,7 @@ Automates the process of locating NV centers in a diamond sample by:
 | 19 | [Merged Legacy Modules](19_merged_legacy_modules.md) | Dispositions and explanations for modules pulled from docs branch |
 | 20 | [POI Extractor](20_poi_extractor_module.md) | Processable-zone candidate scoring, narrowing, and ranking |
 | 21 | [NVCandidateVerifier](21_nv_candidate_verifier.md) | Repeated asynchronous optical verification and auditable POI registration |
+| 22 | [POI Verification Logging](22_poi_verification_logging.md) | Durable per-POI optimizer evidence, drift analysis, and tuning exports |
 
 ## Quick Start
 

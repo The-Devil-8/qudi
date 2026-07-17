@@ -27,6 +27,7 @@ from core.connector import Connector
 from core.statusvariable import StatusVar
 from logic.generic_logic import GenericLogic
 from logic.optimizer2 import Optimizer2D
+from logic.poi_verification_logger import POIVerificationLogger
 
 
 def _utc_timestamp():
@@ -123,6 +124,59 @@ def xy_offset_record(seed_position_m, measured_position_m):
         'delta_y_m': delta_y,
         'radial_m': float(np.hypot(delta_x, delta_y)),
     }
+
+
+def xy_distance_m(first_position, second_position):
+    """Return radial XY distance in metres, or ``None``."""
+    offset = xy_offset_record(first_position, second_position)
+    return None if offset is None else offset['radial_m']
+
+
+def analysis_gate_failures(analysis, min_r_squared=0.6,
+                           sigma_range_m=(0.05e-6, 0.4e-6)):
+    """Return failed optical gates for one bounded XY analysis record."""
+    failures = []
+    if not analysis or not bool(analysis.get('success')):
+        failures.append('xy_fit_failed')
+        return failures
+    if bool(analysis.get('is_edge_fit')):
+        failures.append('edge_fit')
+    r_squared = analysis.get('r_squared')
+    if r_squared is None or not np.isfinite(float(r_squared)):
+        failures.append('r2_missing')
+    elif float(r_squared) <= float(min_r_squared):
+        failures.append('r2_low')
+    sigma = analysis.get('sigma_m')
+    if sigma is None or len(sigma) < 2:
+        failures.append('sigma_missing')
+    else:
+        sigma_min, sigma_max = (float(sigma_range_m[0]), float(sigma_range_m[1]))
+        try:
+            sigma_x = float(sigma[0])
+            sigma_y = float(sigma[1])
+        except (TypeError, ValueError):
+            failures.append('sigma_malformed')
+        else:
+            if (not np.isfinite(sigma_x) or not np.isfinite(sigma_y) or
+                    sigma_x < sigma_min or sigma_x > sigma_max or
+                    sigma_y < sigma_min or sigma_y > sigma_max):
+                failures.append('sigma_out_of_range')
+    position = analysis.get('position_m')
+    bounds = analysis.get('sampled_bounds_m')
+    if position is None or bounds is None or len(bounds) < 4:
+        failures.append('sampled_support_missing')
+    else:
+        x_min, x_max, y_min, y_max = [float(value) for value in bounds[:4]]
+        center_x, center_y = [float(value) for value in position[:2]]
+        if not (x_min <= center_x <= x_max and y_min <= center_y <= y_max):
+            failures.append('outside_sampled_support')
+    return failures
+
+
+def is_worthy_analysis(analysis, min_r_squared=0.6,
+                       sigma_range_m=(0.05e-6, 0.4e-6)):
+    """Return whether an XY analysis passes the configured worthy gates."""
+    return not analysis_gate_failures(analysis, min_r_squared, sigma_range_m)
 
 
 def analyse_legacy_xy_scan(xy_refocus_image, x_values, y_values, seed_position_m,
@@ -249,10 +303,20 @@ class NVCandidateVerifier(GenericLogic):
 
     optimizerlogic = Connector(interface='OptimizerLogic')
     savelogic = Connector(interface='SaveLogic', optional=True)
+    poimanagerlogic = Connector(interface='PoiManagerLogic', optional=True)
 
     diagnostic_only = StatusVar('diagnostic_only', True)
     minimum_attempts = StatusVar('minimum_attempts', 2)
     maximum_attempts = StatusVar('maximum_attempts', 4)
+    stage1_max_attempts = StatusVar('stage1_max_attempts', 4)
+    stage2_max_attempts = StatusVar('stage2_max_attempts', 5)
+    worthy_min_xy_r_squared = StatusVar('worthy_min_xy_r_squared', 0.6)
+    worthy_sigma_min_m = StatusVar('worthy_sigma_min_m', 0.05e-6)
+    worthy_sigma_max_m = StatusVar('worthy_sigma_max_m', 0.4e-6)
+    poi_gaussian_center_tolerance_m = StatusVar(
+        'poi_gaussian_center_tolerance_m', 50e-9)
+    update_seed_after_optimizer = StatusVar('update_seed_after_optimizer', True)
+    auto_register_poi = StatusVar('auto_register_poi', True)
     attempt_timeout_s = StatusVar('attempt_timeout_s', 90.0)
     timeout_cleanup_s = StatusVar('timeout_cleanup_s', 10.0)
     audit_subdirectory = StatusVar('audit_subdirectory', 'NVCandidateVerifier')
@@ -273,7 +337,9 @@ class NVCandidateVerifier(GenericLogic):
         self._active_tag = None
         self._batch = None
         self._audit = None
+        self._poi_logger = None
         self._timeout_requested = False
+        self._current_stage = 'stage1'
         self._watchdog = QtCore.QTimer(self)
         self._watchdog.setSingleShot(True)
         self._watchdog.timeout.connect(self._on_attempt_timeout)
@@ -303,15 +369,9 @@ class NVCandidateVerifier(GenericLogic):
         return os.path.join(os.getcwd(), 'data', self.audit_subdirectory)
 
     def verify_batch(self, candidates, run_context=None):
-        """Start a non-blocking diagnostic batch and return a stable run ID.
-
-        No POI is registered and no candidate receives an acceptance/rejection
-        verdict, regardless of the captured result.
-        """
+        """Start a non-blocking staged verification batch and return run ID."""
         if self._active:
             raise RuntimeError('an NVCandidateVerifier batch is already active')
-        if not bool(self.diagnostic_only):
-            raise RuntimeError('only diagnostic_only=True is implemented; automated gates are disabled')
 
         records = [candidate_to_record(candidate, index)
                    for index, candidate in enumerate(candidates)]
@@ -320,33 +380,33 @@ class NVCandidateVerifier(GenericLogic):
         labels = [record['candidate_label'] for record in records]
         if len(set(labels)) != len(labels):
             raise ValueError('candidate_id values must be unique within one verification batch')
-        policy = DiagnosticRetryPolicy(self.minimum_attempts, self.maximum_attempts)
+        policy = self._policy_snapshot()
         run_id = 'nvverify_{0}_{1}'.format(_utc_timestamp(), uuid.uuid4().hex[:8])
         metadata = {
             'run_context': run_context or {},
-            'policy': {
-                'minimum_attempts': policy.minimum_attempts,
-                'maximum_attempts': policy.maximum_attempts,
-                'attempt_timeout_s': float(self.attempt_timeout_s),
-                'timeout_cleanup_s': float(self.timeout_cleanup_s),
-            },
+            'policy': policy,
             'legacy_optimizer_settings': self._optimizer_settings_snapshot(),
         }
-        self._audit = VerificationAuditStore(self._audit_root(), run_id, metadata)
+        self._poi_logger = POIVerificationLogger(
+            self._audit_root(), run_id=run_id,
+            run_context=run_context or {}, policy_snapshot=metadata)
+        for index, candidate in enumerate(candidates):
+            self._poi_logger.start_candidate(candidate, index=index)
         self._batch = {
             'run_id': run_id,
-            'audit_directory': self._audit.run_directory,
+            'audit_directory': self._poi_logger.run_directory,
             'started_utc': _utc_timestamp(),
-            'diagnostic_only': True,
+            'diagnostic_only': bool(self.diagnostic_only),
             'run_context': run_context or {},
             'candidates': records,
             'status': 'running',
-            'policy': metadata['policy'],
+            'policy': policy,
         }
         self._policy = policy
         self._active = True
         self._stop_requested = False
         self._current_index = 0
+        self._current_stage = 'stage1'
         QtCore.QTimer.singleShot(0, self._start_current_attempt)
         return run_id
 
@@ -368,6 +428,25 @@ class NVCandidateVerifier(GenericLogic):
         return {name: _json_value(getattr(self._optimizer, name, None))
                 for name in names}
 
+    def _policy_snapshot(self):
+        return {
+            'diagnostic_only': bool(self.diagnostic_only),
+            'stage1_max_attempts': int(self.stage1_max_attempts),
+            'stage2_max_attempts': int(self.stage2_max_attempts),
+            'worthy_min_xy_r_squared': float(self.worthy_min_xy_r_squared),
+            'worthy_sigma_min_m': float(self.worthy_sigma_min_m),
+            'worthy_sigma_max_m': float(self.worthy_sigma_max_m),
+            'poi_gaussian_center_tolerance_m': float(
+                self.poi_gaussian_center_tolerance_m),
+            'update_seed_after_optimizer': bool(self.update_seed_after_optimizer),
+            'auto_register_poi': bool(self.auto_register_poi),
+            'attempt_timeout_s': float(self.attempt_timeout_s),
+            'timeout_cleanup_s': float(self.timeout_cleanup_s),
+        }
+
+    def _sigma_range_m(self):
+        return (float(self.worthy_sigma_min_m), float(self.worthy_sigma_max_m))
+
     def _start_current_attempt(self):
         if not self._active:
             return
@@ -379,7 +458,16 @@ class NVCandidateVerifier(GenericLogic):
             return
 
         candidate = self._batch['candidates'][self._current_index]
-        attempt_number = len(candidate['attempts']) + 1
+        candidate.setdefault('current_seed_position_m',
+                             list(candidate['seed_position_m']))
+        candidate.setdefault('stage', 'stage1')
+        candidate.setdefault('stage1_attempts', 0)
+        candidate.setdefault('final_state_attempts', 0)
+        self._current_stage = candidate['stage']
+        attempt_number = (
+            int(candidate['stage1_attempts']) + 1
+            if self._current_stage == 'stage1'
+            else int(candidate['final_state_attempts']) + 1)
         if self._optimizer.module_state() != 'idle':
             self._record_non_scan_attempt(candidate, attempt_number, 'hardware_busy',
                                           'legacy optimizer module is not idle')
@@ -388,24 +476,32 @@ class NVCandidateVerifier(GenericLogic):
             return
 
         self._active_tag = '{0}:{1}:a{2:02d}'.format(
-            self._batch['run_id'], candidate['candidate_label'], attempt_number)
+            self._batch['run_id'], candidate['candidate_label'],
+            len(candidate['attempts']) + 1)
         self._attempt_started_at = time.monotonic()
         self._attempt_started_utc = _utc_timestamp()
         self._timeout_requested = False
-        candidate['status'] = 'scanning'
+        candidate['status'] = 'scanning_{0}'.format(self._current_stage)
         self.sigVerificationProgress.emit(self._batch['run_id'], candidate['candidate_id'],
-                                          attempt_number, self._policy.maximum_attempts)
+                                          attempt_number,
+                                          self._stage_max_attempts(self._current_stage))
         self.sigCandidateVerificationUpdated.emit(dict(candidate))
         self._watchdog.start(max(1, int(float(self.attempt_timeout_s) * 1000)))
         try:
             self._optimizer.start_refocus(
-                initial_pos=list(candidate['seed_position_m']), caller_tag=self._active_tag)
+                initial_pos=list(candidate['current_seed_position_m']),
+                caller_tag=self._active_tag)
         except Exception as error:
             self._watchdog.stop()
             self._active_tag = None
             self._record_non_scan_attempt(candidate, attempt_number, 'hardware_error', str(error))
             candidate['status'] = 'unresolved'
             self._advance_candidate()
+
+    def _stage_max_attempts(self, stage):
+        if stage == 'stage1':
+            return int(self.stage1_max_attempts)
+        return int(self.stage2_max_attempts)
 
     def _on_attempt_timeout(self):
         """Ask the legacy optimizer to stop, then await its correlated signal."""
@@ -424,7 +520,7 @@ class NVCandidateVerifier(GenericLogic):
         if not self._active or self._active_tag is None:
             return
         candidate = self._batch['candidates'][self._current_index]
-        attempt_number = len(candidate['attempts']) + 1
+        attempt_number = self._current_stage_attempt_number(candidate)
         elapsed = time.monotonic() - self._attempt_started_at
         attempt = {
             'run_id': self._batch['run_id'],
@@ -435,7 +531,9 @@ class NVCandidateVerifier(GenericLogic):
             'started_utc': self._attempt_started_utc,
             'elapsed_s': elapsed,
             'outcome': 'stopped' if self._stop_requested else 'timeout',
-            'seed_position_m': candidate['seed_position_m'],
+            'stage': self._current_stage,
+            'seed_position_m': candidate.get('current_seed_position_m',
+                                             candidate['seed_position_m']),
             'error': 'no matching sigRefocusFinished after stop_refocus cleanup interval',
             'optimizer2_xy': {
                 'success': False,
@@ -445,6 +543,8 @@ class NVCandidateVerifier(GenericLogic):
         }
         self._record_attempt(candidate, attempt_number, attempt, None)
         candidate['status'] = 'unresolved'
+        self._finalize_logged_candidate(candidate, 'unresolved',
+                                        rejection_reason=attempt['error'])
         self.sigVerificationError.emit(self._batch['run_id'], attempt['error'])
         self._active_tag = None
         self._finish_batch('stopped' if self._stop_requested else 'timed_out')
@@ -455,7 +555,7 @@ class NVCandidateVerifier(GenericLogic):
         self._watchdog.stop()
         self._timeout_cleanup.stop()
         candidate = self._batch['candidates'][self._current_index]
-        attempt_number = len(candidate['attempts']) + 1
+        attempt_number = self._current_stage_attempt_number(candidate)
         elapsed = time.monotonic() - self._attempt_started_at
         attempt, arrays = self._capture_attempt(candidate, attempt_number,
                                                 optimal_position, elapsed)
@@ -468,23 +568,35 @@ class NVCandidateVerifier(GenericLogic):
 
         if self._stop_requested:
             candidate['status'] = 'stopped'
+            self._finalize_logged_candidate(candidate, 'skipped',
+                                            rejection_reason='stopped by user')
             self._finish_batch('stopped')
             return
-        action = self._policy.next_action(candidate['attempts'])
+        action = self._evaluate_after_attempt(candidate, attempt)
         candidate['status'] = action
         self.sigCandidateVerificationUpdated.emit(dict(candidate))
         if action == 'retry':
             QtCore.QTimer.singleShot(0, self._start_current_attempt)
+        elif action == 'enter_final_state':
+            candidate['stage'] = 'final_state'
+            QtCore.QTimer.singleShot(0, self._start_current_attempt)
         else:
             self._advance_candidate()
+
+    def _current_stage_attempt_number(self, candidate):
+        if self._current_stage == 'stage1':
+            return int(candidate.get('stage1_attempts', 0)) + 1
+        return int(candidate.get('final_state_attempts', 0)) + 1
 
     def _capture_attempt(self, candidate, attempt_number, optimal_position, elapsed):
         xy_image = getattr(self._optimizer, 'xy_refocus_image', None)
         x_values = getattr(self._optimizer, '_X_values', None)
         y_values = getattr(self._optimizer, '_Y_values', None)
         opt_channel = getattr(self._optimizer, 'opt_channel', 0)
+        seed_position = candidate.get('current_seed_position_m',
+                                      candidate['seed_position_m'])
         analysis = analyse_legacy_xy_scan(xy_image, x_values, y_values,
-                                          candidate['seed_position_m'], opt_channel)
+                                          seed_position, opt_channel)
         legacy_sigma = [getattr(self._optimizer, 'optim_sigma_x', None),
                         getattr(self._optimizer, 'optim_sigma_y', None),
                         getattr(self._optimizer, 'optim_sigma_z', None)]
@@ -497,28 +609,45 @@ class NVCandidateVerifier(GenericLogic):
             'z_refocus_line': getattr(self._optimizer, 'z_refocus_line', None),
             'z_values_m': getattr(self._optimizer, '_zimage_Z_values', None),
             'z_fit_data': getattr(self._optimizer, 'z_fit_data', None),
-            'seed_position_m': candidate['seed_position_m'],
+            'seed_position_m': seed_position,
             'legacy_return_position_m': optimal_position,
         }
+        gate_failures = analysis_gate_failures(
+            analysis, self.worthy_min_xy_r_squared, self._sigma_range_m())
+        poi_gaussian_distance = xy_distance_m(optimal_position,
+                                             analysis.get('position_m'))
+        final_tolerance = float(self.poi_gaussian_center_tolerance_m)
+        final_gate_failures = list(gate_failures)
+        if self._current_stage == 'final_state':
+            if poi_gaussian_distance is None:
+                final_gate_failures.append('poi_gaussian_distance_missing')
+            elif poi_gaussian_distance > final_tolerance:
+                final_gate_failures.append('poi_gaussian_distance_large')
         return {
             'run_id': self._batch['run_id'],
             'candidate_id': candidate['candidate_id'],
             'candidate_label': candidate['candidate_label'],
+            'stage': self._current_stage,
             'attempt_number': attempt_number,
             'caller_tag': self._active_tag,
             'started_utc': self._attempt_started_utc,
             'elapsed_s': elapsed,
             'outcome': 'completed',
-            'seed_position_m': candidate['seed_position_m'],
+            'seed_position_m': seed_position,
             'legacy_return_position_m': _json_value(optimal_position),
             'legacy_return_offset_from_seed_xy_m': xy_offset_record(
-                candidate['seed_position_m'], optimal_position),
+                seed_position, optimal_position),
             'legacy_sigma_m': _json_value(legacy_sigma),
             'legacy_xy_fit_evidence': bool(legacy_xy_fit_evidence),
             'legacy_xy_fit_note': ('positive legacy sigmas observed; raw bounded re-analysis remains authoritative'
                                    if legacy_xy_fit_evidence else
                                    'indeterminate: zero/absent legacy sigma can represent a fallback'),
             'optimizer2_xy': analysis,
+            'gate_failures': final_gate_failures,
+            'worthy_candidate': not gate_failures,
+            'final_state_fit': (
+                self._current_stage == 'final_state' and not final_gate_failures),
+            'poi_gaussian_distance_xy_m': poi_gaussian_distance,
         }, arrays
 
     def _record_non_scan_attempt(self, candidate, attempt_number, outcome, error):
@@ -526,25 +655,195 @@ class NVCandidateVerifier(GenericLogic):
             'run_id': self._batch['run_id'],
             'candidate_id': candidate['candidate_id'],
             'candidate_label': candidate['candidate_label'],
+            'stage': self._current_stage,
             'attempt_number': attempt_number,
             'caller_tag': None,
             'started_utc': _utc_timestamp(),
             'elapsed_s': 0.0,
             'outcome': outcome,
-            'seed_position_m': candidate['seed_position_m'],
+            'seed_position_m': candidate.get('current_seed_position_m',
+                                             candidate['seed_position_m']),
             'error': error,
+            'gate_failures': [outcome],
             'optimizer2_xy': {'success': False, 'is_edge_fit': False, 'error': error},
         }
         self._record_attempt(candidate, attempt_number, attempt, None)
+        self._finalize_logged_candidate(candidate, 'unresolved',
+                                        rejection_reason=error)
         self.sigVerificationError.emit(self._batch['run_id'], str(error))
 
     def _record_attempt(self, candidate, attempt_number, attempt, arrays):
-        self._audit.record_attempt(candidate['candidate_label'], attempt_number, attempt, arrays)
+        next_seed, next_seed_source = self._choose_next_seed(candidate, attempt)
+        if bool(self.update_seed_after_optimizer) and next_seed is not None:
+            attempt['next_seed_position_m'] = next_seed
+            attempt['next_seed_source'] = next_seed_source
+        else:
+            attempt['next_seed_position_m'] = None
+            attempt['next_seed_source'] = 'unchanged'
+        if self._poi_logger is not None:
+            analysis = attempt.get('optimizer2_xy', {})
+            self._poi_logger.log_attempt(
+                candidate['candidate_id'],
+                stage=attempt.get('stage', self._current_stage),
+                attempt_number=attempt_number,
+                seed_position_m=attempt.get('seed_position_m'),
+                optimizer_return_position_m=attempt.get('legacy_return_position_m'),
+                gaussian_center_xy_m=analysis.get('position_m'),
+                poi_center_xy_m=attempt.get('legacy_return_position_m'),
+                next_seed_position_m=attempt.get('next_seed_position_m'),
+                outcome=attempt.get('outcome', 'completed'),
+                r_squared_xy=analysis.get('r_squared'),
+                sigma_xy_m=analysis.get('sigma_m'),
+                candidate_score=candidate.get('overall_score'),
+                gate_failures=attempt.get('gate_failures', []),
+                elapsed_s=attempt.get('elapsed_s'),
+                raw_arrays=arrays,
+                error=attempt.get('error'),
+                metadata={
+                    'caller_tag': attempt.get('caller_tag'),
+                    'legacy_sigma_m': attempt.get('legacy_sigma_m'),
+                    'legacy_xy_fit_evidence': attempt.get('legacy_xy_fit_evidence'),
+                    'next_seed_source': attempt.get('next_seed_source'),
+                    'raw_optimizer2_xy': analysis,
+                })
+        if attempt.get('stage') == 'stage1':
+            candidate['stage1_attempts'] = int(candidate.get('stage1_attempts', 0)) + 1
+        elif attempt.get('stage') == 'final_state':
+            candidate['final_state_attempts'] = int(
+                candidate.get('final_state_attempts', 0)) + 1
         candidate['attempts'].append(attempt)
+        if bool(self.update_seed_after_optimizer) and next_seed is not None:
+            candidate['current_seed_position_m'] = next_seed
+
+    def _choose_next_seed(self, candidate, attempt):
+        seed = attempt.get('seed_position_m') or candidate.get('current_seed_position_m')
+        z_value = None
+        legacy_return = attempt.get('legacy_return_position_m')
+        if legacy_return is not None and len(legacy_return) >= 3:
+            try:
+                z_value = float(legacy_return[2])
+            except (TypeError, ValueError):
+                z_value = None
+        if z_value is None and seed is not None and len(seed) >= 3:
+            z_value = float(seed[2])
+        analysis_position = attempt.get('optimizer2_xy', {}).get('position_m')
+        if analysis_position is not None:
+            try:
+                return [float(analysis_position[0]), float(analysis_position[1]),
+                        z_value], 'gaussian_center'
+            except (TypeError, ValueError, IndexError):
+                pass
+        normalized_return = None
+        if legacy_return is not None:
+            try:
+                normalized_return = [float(legacy_return[0]), float(legacy_return[1]),
+                                     float(legacy_return[2])]
+            except (TypeError, ValueError, IndexError):
+                normalized_return = None
+        if normalized_return is not None:
+            return normalized_return, 'optimizer_return'
+        return None, 'unchanged'
 
     def _advance_candidate(self):
         self._current_index += 1
+        self._current_stage = 'stage1'
         QtCore.QTimer.singleShot(0, self._start_current_attempt)
+
+    def _evaluate_after_attempt(self, candidate, attempt):
+        if attempt.get('outcome') in ('timeout', 'hardware_error', 'hardware_busy'):
+            self._finalize_logged_candidate(
+                candidate, 'unresolved',
+                rejection_reason=attempt.get('error') or attempt.get('outcome'))
+            return 'unresolved'
+
+        if attempt.get('stage') == 'stage1':
+            if bool(attempt.get('worthy_candidate')):
+                candidate['stage'] = 'final_state'
+                candidate['status'] = 'enter_final_state'
+                return 'enter_final_state'
+            if int(candidate.get('stage1_attempts', 0)) >= int(self.stage1_max_attempts):
+                candidate['status'] = 'rejected'
+                self._finalize_logged_candidate(
+                    candidate, 'rejected',
+                    rejection_reason='stage1_budget_exhausted:{0}'.format(
+                        ','.join(attempt.get('gate_failures', []))))
+                return 'rejected'
+            return 'retry'
+
+        if attempt.get('stage') == 'final_state':
+            if bool(attempt.get('final_state_fit')):
+                return self._accept_candidate(candidate, attempt)
+            if int(candidate.get('final_state_attempts', 0)) >= int(self.stage2_max_attempts):
+                candidate['status'] = 'rejected'
+                self._finalize_logged_candidate(
+                    candidate, 'rejected',
+                    rejection_reason='final_state_budget_exhausted:{0}'.format(
+                        ','.join(attempt.get('gate_failures', []))))
+                return 'rejected'
+            return 'retry'
+
+        self._finalize_logged_candidate(candidate, 'unresolved',
+                                        rejection_reason='unknown verifier stage')
+        return 'unresolved'
+
+    def _accept_candidate(self, candidate, attempt):
+        analysis = attempt.get('optimizer2_xy', {})
+        gaussian_xy = analysis.get('position_m')
+        if gaussian_xy is None:
+            self._finalize_logged_candidate(
+                candidate, 'unresolved',
+                rejection_reason='missing Gaussian centre at acceptance')
+            return 'unresolved'
+        z_value = candidate.get('current_seed_position_m',
+                                candidate['seed_position_m'])[2]
+        accepted_position = [float(gaussian_xy[0]), float(gaussian_xy[1]),
+                             float(z_value)]
+        candidate['accepted_position_m'] = accepted_position
+        candidate['status'] = 'optically_verified'
+        poi_name = self._candidate_poi_name(candidate)
+        registration_status = 'diagnostic_not_registered'
+        if (not bool(self.diagnostic_only) and bool(self.auto_register_poi) and
+                self.poimanagerlogic() is not None):
+            try:
+                self.poimanagerlogic().add_poi(
+                    position=np.array(accepted_position), name=poi_name)
+                registration_status = 'registered'
+            except Exception as error:
+                registration_status = 'registration_failed:{0}'.format(error)
+                candidate['status'] = 'registration_failed'
+        self._finalize_logged_candidate(
+            candidate, 'accepted',
+            accepted_position_m=accepted_position,
+            poi_name=poi_name,
+            registration_status=registration_status)
+        return candidate['status']
+
+    def _candidate_poi_name(self, candidate):
+        region = _safe_slug(candidate.get('region_id') or 'R000', 'R000')
+        token = _safe_slug(candidate.get('candidate_label') or
+                           candidate.get('candidate_id'), 'candidate')
+        return 'NV_{0}_{1}'.format(region, token)
+
+    def _finalize_logged_candidate(self, candidate, final_status,
+                                   accepted_position_m=None,
+                                   rejection_reason=None, poi_name=None,
+                                   registration_status=None):
+        if candidate.get('_logged_final_decision'):
+            return
+        candidate['_logged_final_decision'] = True
+        if self._poi_logger is not None:
+            self._poi_logger.finalize_candidate(
+                candidate['candidate_id'],
+                final_status=final_status,
+                accepted_position_m=accepted_position_m,
+                rejection_reason=rejection_reason,
+                poi_name=poi_name,
+                registration_status=registration_status,
+                metadata={
+                    'stage1_attempts': candidate.get('stage1_attempts', 0),
+                    'final_state_attempts': candidate.get('final_state_attempts', 0),
+                    'diagnostic_only': bool(self.diagnostic_only),
+                })
 
     def _finish_batch(self, status):
         if not self._active:
@@ -555,9 +854,13 @@ class NVCandidateVerifier(GenericLogic):
             for candidate in self._batch['candidates'][self._current_index + 1:]:
                 if candidate['status'] == 'queued':
                     candidate['status'] = 'skipped'
+                    self._finalize_logged_candidate(
+                        candidate, 'skipped',
+                        rejection_reason='batch {0}'.format(status))
         self._batch['status'] = status
         self._batch['finished_utc'] = _utc_timestamp()
-        self._audit.finish(self._batch)
+        if self._poi_logger is not None:
+            self._poi_logger.finish_run(status, metadata={'batch': self._batch})
         result = dict(self._batch)
         self._active = False
         self._active_tag = None

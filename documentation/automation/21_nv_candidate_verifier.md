@@ -7,6 +7,15 @@ single-attempt proposal in `NVVerifier.md`.  The implementation intentionally
 does not yet register, accept, or reject POIs: it collects calibrated evidence
 first.
 
+**Planned policy:** the production verifier is a two-stage optimizer-driven
+state machine.  Stage 1 runs the optimizer up to four times while updating the
+seed after each usable optimizer result, and enters the final state only after
+`WorthyCandidate()` passes.  Stage 2 still runs the optimizer; only after each
+final-state optimization does it check whether the current POI centre and the
+fitted Gaussian centre agree within the configured tolerance.  This matters
+because several optimizer passes may be needed before the approximate
+extracted POI converges to the actual NV-like fluorescent spot.
+
 `NVCandidateVerifier` is the asynchronous diagnostic bridge from
 `POIExtractor` to `OptimizerLogic`.  It collects repeated evidence that a
 candidate is a **reproducibly localizable fluorescent spot** before any future
@@ -47,8 +56,8 @@ living-cell/confocal workflow:
    candidate filtering changes.  They are not stable experiment identifiers.
 
 The revised design treats a failed observation as one piece of evidence.  It
-does not reject a normal candidate until the configured two-to-four attempts
-have been completed and recorded.
+does not reject a normal candidate until the configured optimizer budget for
+the active stage has been completed and recorded.
 
 ## Evidence behind the repeated-measurement policy
 
@@ -104,9 +113,13 @@ boundaries:
 class OptimizerAttemptResult:
     attempt_id: str
     candidate_id: str
+    stage: str                   # stage1 | final_state
     attempt_number: int
     seed_position: tuple[float, float, float]
     optimized_position: tuple[float, float, float] | None
+    gaussian_center_xy_m: tuple[float, float] | None
+    poi_center_xy_m: tuple[float, float] | None
+    next_seed_position: tuple[float, float, float] | None
     completed_at: datetime
     elapsed_s: float
     outcome: str                 # passed | failed_gate | timeout | hardware_error
@@ -117,6 +130,9 @@ class OptimizerAttemptResult:
     sigma_xy_m: tuple[float, float] | None
     sigma_z_m: float | None
     displacement_xy_m: float | None
+    poi_gaussian_distance_xy_m: float | None
+    worthy_candidate: bool | None
+    final_state_fit: bool | None
     gate_failures: tuple[str, ...]
     optimizer_error: str | None
 
@@ -127,6 +143,8 @@ class CandidateVerificationResult:
     attempts: list[OptimizerAttemptResult]
     status: str                  # optically_verified | rejected | unresolved | skipped
     consensus_position: tuple[float, float, float] | None
+    stage1_attempts: int
+    final_state_attempts: int
     localization_spread_xy_m: float | None
     rejection_reason: str | None
     poi_name: str | None
@@ -163,6 +181,8 @@ class RefocusResult:
     caller_tag: str
     initial_position: tuple[float, float, float]
     optimized_position: tuple[float, float, float]
+    gaussian_center_xy_m: tuple[float, float] | None
+    poi_center_xy_m: tuple[float, float] | None
     xy_fit_success: bool
     z_fit_success: bool
     xy_r_squared: float | None
@@ -181,6 +201,12 @@ R2 is calculated from the **raw optimizer scan data** and its fitted model
 success, boundary hits, and sigmas are separate signals of quality; R2 alone
 must never be used as an oracle.  The optimizer must set explicit failure
 flags before it replaces a failed fit with the initial position.
+
+For the final-state 50 nm gate, the result must expose the fitted Gaussian
+centre separately from the current POI/scanner centre.  If those are the same
+coordinate in a future optimizer implementation, that equality should be
+explicit in the result object rather than inferred from the legacy
+`[x, y, z, 0]` payload.
 
 Until this contract is available, the verifier may run in a diagnostic mode
 only: it records positions and marks the outcome `unresolved`; it must not
@@ -283,8 +309,8 @@ attempt, the verifier must instead record:
 
 An extrapolated/edge result is `outside_sampled_window` and triggers the next
 attempt plus diagnostic capture.  It is **not** a final candidate rejection.
-After the two-to-four normal attempts, a candidate affected by this condition
-is `unresolved_optimizer_window`, not `rejected`, until the calibration below
+After the configured stage budget, a candidate affected by this condition is
+`unresolved_optimizer_window`, not `rejected`, until the calibration below
 shows that the behaviour is understood and bounded.
 
 ### Real motion, drift, and photophysics are separate hypotheses
@@ -366,78 +392,149 @@ Before turning the optional displacement diagnostic into a reject gate:
 6. Re-run the controlled experiment and document the calibrated limits before
    enabling any automated displacement rejection.
 
-## Candidate protocol: 2–4 attempts before rejection
+## Candidate protocol: staged optimizer verification
 
 ### Configuration policy
 
 | Parameter | Initial value | Meaning |
 |---|---:|---|
-| `min_attempts_before_reject` | 2 | Every normal candidate gets at least two complete observations. |
-| `max_attempts` | 4 | Evidence cap for an ambiguous candidate. |
-| `min_passing_attempts` | 2 | At least two attempts must pass all enabled optical gates. |
-| `candidate_timeout_s` | setup-specific | Watchdog deadline for one attempt. |
-| `max_repeat_spread_xy_m` | calibrated | Maximum robust spread among passing positions. |
-| `min_xy_r_squared` | calibrated | Fit-quality floor, disabled only explicitly. |
-| `expected_sigma_xy_m` / tolerance | calibrated | PSF-width plausibility gate. |
+| `stage1_max_attempts` | 4 | Maximum optimizer attempts before a candidate is rejected as not worthy. |
+| `stage2_max_attempts` | 5 | Maximum final-state optimizer attempts before rejecting the POI. |
+| `update_seed_after_optimizer` | `True` | The next optimizer attempt starts from the last usable optimized/Gaussian centre. |
+| `worthy_sigma_xy_range_m` | `(0.05e-6, 0.4e-6)` | Accepted lateral Gaussian sigma range for `WorthyCandidate()`. |
+| `worthy_min_xy_r_squared` | `0.6` | Minimum XY Gaussian fit R2 for `WorthyCandidate()`. |
+| `poi_gaussian_center_tolerance_m` | `50e-9` | Final-state tolerance for `centre(POI) == centre(Gaussian)`. |
+| `candidate_timeout_s` | setup-specific | Watchdog deadline for one optimizer attempt. |
+| `edge_margin_px` / support margin | calibrated | Rejects or retries fits at the sampled-window boundary. |
 
-These values are **not** universal NV constants.  They must be calibrated on
-labelled stable spots from the same objective, pixel pitch, scan window,
-excitation power, and sample preparation.  In particular, no
-`max_seed_offset_xy_m` acceptance/rejection gate is enabled in v1.  Once the
-optimizer defects below are repaired and a calibration experiment has passed,
-an optional displacement *diagnostic* may be added.  It must be derived from
-the actual XY coordinates acquired for that attempt, not from a hard-coded
-1 um value or merely from `refocus_XY_size`.
+These values are **not** universal NV constants.  The 50-400 nm sigma band is
+a practical plausibility range for a diffraction-limited confocal spot in this
+setup: it rejects delta-like hot pixels and broad cell/background structures,
+while leaving room for optical alignment, pixel pitch, and nanodiamond size.
+The `R2 > 0.6` floor is intentionally a future gate on raw optimizer Gaussian
+fits, not a claim that the current diagnostic calibration run already passes.
+The 2026-07-16 verifier data had 96 attempts, 88 bounded re-analyses marked as
+edge fits, R2 from about 0.043 to 0.763, only one attempt above 0.6, and no
+attempt satisfying both `R2 > 0.6` and the sigma band.  That run supports the
+need for the staged policy, but not automatic acceptance yet.
 
-### Attempt sequence
+In particular, no `max_seed_offset_xy_m` acceptance/rejection gate is enabled
+in v1.  Once the optimizer defects below are repaired and a calibration
+experiment has passed, an optional displacement *diagnostic* may be added.  It
+must be derived from the actual XY coordinates acquired for that attempt, not
+from a hard-coded 1 um value or merely from `refocus_XY_size`.
 
-For each candidate, retain `seed_position = (x, y, z_estimate)` unchanged.
-Each attempt starts a full XY/Z optimizer scan from that same seed, not from
-the preceding optimized position.  This makes the attempts independent checks
-of the extraction position and prevents a wrong first lock from walking the
-candidate toward a neighbouring bright structure.
+### `WorthyCandidate()`
 
-1. Create a unique correlation tag, for example
-   `nvverify:<run_id>:<candidate_id>:a<attempt_number>`.
-2. Request `OptimizerLogic.start_refocus(seed_position, caller_tag=tag)` and
-   start a Qt single-shot watchdog timer.
-3. On the matching `RefocusResult`, stop the watchdog and evaluate the attempt:
-   fit success, R2 where enabled, centre inside the actual sampled support and
-   away from its edge, and plausible sigma.  Record the displacement from the
-   immutable seed as diagnostic evidence only.  Store every metric and failed
-   gate.
-4. If the attempt passes, include its fitted position in the provisional
-   consensus set.  A failed gate is recorded; it does not by itself reject the
-   candidate.
-5. Run the next attempt until there are two passing, mutually consistent
-   observations (accept), or until `max_attempts` observations have been made
-   (reject or mark unresolved according to the evidence below).
+`WorthyCandidate()` is the Stage 1 gate evaluated after an optimizer attempt
+returns a structured XY Gaussian fit:
+
+```text
+WorthyCandidate :=
+    fit_success_xy
+    AND gaussian_center_inside_sampled_support
+    AND not edge_fit
+    AND 0.05 um <= sigma_x <= 0.4 um
+    AND 0.05 um <= sigma_y <= 0.4 um
+    AND R2_xy > 0.6
+```
+
+The sigma values are Gaussian standard deviations, not FWHM.  If only one
+effective lateral sigma is reported, it must be derived from the fitted
+`sigma_x` and `sigma_y` by a documented rule such as geometric mean; the raw
+axis values should still be persisted.  R2 is calculated from the raw
+optimizer scan and fitted model.  A malformed payload, missing R2, failed fit,
+or edge/out-of-support centre is a failed attempt, not a worthy candidate.
+
+### Stage 1: candidate-to-worthy loop
+
+For each candidate, initialise `current_seed = (x, y, z_estimate)` from
+`POIExtractor`.  Every optimizer attempt uses a unique correlation tag, for
+example `nvverify:<run_id>:<candidate_id>:s1a<attempt_number>`, and runs a
+full optimizer pass from `current_seed`.
+
+```mermaid
+graph TD
+    A([Start: Process POI]) --> B{attempt < 4}
+    B -- Yes --> C[Run optimizer from current seed]
+    C --> S[Update seed from usable optimizer or Gaussian centre]
+    S --> D{WorthyCandidate?}
+    D -- Yes --> E[Enter FinalState]
+    D -- No --> F[Increment attempt]
+    F --> B
+    B -- No --> G[Reject]
+    G --> H([Move to next POI])
+```
+
+Seed update is deliberate.  The POI extracted from the close scan is an
+approximate starting point; repeated optimizer attempts are allowed to walk
+toward the actual NV-like spot.  The update must still be auditable: persist
+the previous seed, optimizer returned position, Gaussian centre, fit metrics,
+and chosen next seed for every attempt.  If the optimizer result is malformed
+or has no finite centre, keep the previous seed and record the failed update.
+
+### Stage 2: final-state convergence loop
+
+FinalState is not a passive check.  It still runs the optimizer, because
+several optimization attempts may be needed before the current POI centre has
+actually converged to the Gaussian centre of the fluorescent spot.
+
+```mermaid
+graph TD
+    E[Enter FinalState] --> I{attempt < 5}
+    I -- Yes --> J[Run optimizer from current seed]
+    J --> U[Update current POI centre and seed]
+    U --> K{Fits? centre(POI) == centre(Gaussian)}
+    K -- Yes --> L[Add to POIManager]
+    L --> H([Move to next POI])
+    K -- No --> M[Increment attempt]
+    M --> I
+    I -- No --> N[Reject POI]
+    N --> H
+```
+
+`Fits?` is evaluated only after the final-state optimizer attempt completes.
+It requires the same basic fit hygiene as `WorthyCandidate()` plus a centre
+agreement check:
+
+```text
+Fits :=
+    fit_success_xy
+    AND gaussian_center_inside_sampled_support
+    AND not edge_fit
+    AND 0.05 um <= sigma_x <= 0.4 um
+    AND 0.05 um <= sigma_y <= 0.4 um
+    AND R2_xy > 0.6
+    AND distance_xy(centre(POI), centre(Gaussian)) <= 50 nm
+```
+
+Here `centre(POI)` means the current optimizer-set POI/scanner centre after
+that attempt, while `centre(Gaussian)` is the centre fitted from the raw XY
+optimizer image.  If the current implementation cannot expose both values
+separately, the result contract must be extended before this gate is enabled.
+On success, register the POI with `PoiManagerLogic` at the fitted Gaussian
+centre or an explicitly documented consensus derived from the successful
+final-state attempt.
 
 No physical call is blocking.  The state machine is driven by queued Qt
 signals and timers, so the Qudi event loop remains responsive.
 
 ### Decision rule
 
-After two or more passing observations, compute a robust consensus coordinate
-using the component-wise median.  Compute XY repeatability as the maximum or
-robust radial spread of the passing positions from that median.
-
-- **Optically verified:** at least `min_passing_attempts` (initially 2) passing
-  attempts and repeatability within `max_repeat_spread_xy_m`.  Register the
-  median consensus position.
-- **Rejected:** all configured attempts completed and there are not enough
-  passing attempts, or their positions are not mutually consistent.  Record
-  the full failure distribution (for example `3/4 xy_fit_failed`, not merely
-  `rejected`).
+- **Optically verified:** Stage 1 has produced a worthy candidate, and Stage 2
+  has produced a final-state fit where the POI centre and Gaussian centre
+  agree within 50 nm.  Register the resulting centre in `PoiManagerLogic`.
+- **Rejected:** Stage 1 exhausts four optimizer attempts without
+  `WorthyCandidate()`, or Stage 2 exhausts five optimizer attempts without
+  `Fits()`.  Record the full failure distribution, not merely `rejected`.
 - **Unresolved:** timeout, hardware error, aborted optimizer, malformed or
-  unmatched completion, or unavailable quality payload prevents a valid
-  evidence-based decision.  Do not register a POI and do not count it as a
-  negative optical observation.
+  unmatched completion, unavailable quality payload, or missing separate POI
+  and Gaussian centres prevents an evidence-based decision.  Do not register a
+  POI and do not count it as a negative optical observation.
 
-The verifier may finish early only after a successful two-pass consensus.  It
-does **not** finish early in rejection: a candidate receives the requested
-two-to-four attempts before rejection.  This policy is intentionally more
-conservative with false negatives than the previous plan.
+The verifier may finish early only on success.  It does **not** finish early
+in rejection: a candidate receives the configured stage budget before being
+rejected.  This policy is intentionally conservative with false negatives.
 
 ### Optional Step 3: duplicate/deconfliction check
 
@@ -455,12 +552,15 @@ is not a substitute for HBT/ODMR where two emitters remain diffraction-limited.
 
 ```text
 IDLE
-  -> BATCH_STARTING -> CANDIDATE_STARTING -> ATTEMPT_RUNNING
-  -> ATTEMPT_EVALUATING -> CANDIDATE_STARTING       (another attempt)
-  -> CONSENSUS_EVALUATING -> DECONFLICTING -> REGISTERING -> CANDIDATE_STARTING
+  -> BATCH_STARTING -> CANDIDATE_STARTING -> STAGE1_ATTEMPT_RUNNING
+  -> STAGE1_EVALUATING -> CANDIDATE_STARTING        (another Stage 1 attempt)
+  -> FINAL_STATE_STARTING -> STAGE2_ATTEMPT_RUNNING
+  -> STAGE2_EVALUATING -> FINAL_STATE_STARTING      (another Stage 2 attempt)
+  -> DECONFLICTING -> REGISTERING -> CANDIDATE_STARTING
   -> BATCH_FINISHED -> IDLE
 
-ATTEMPT_RUNNING -> ATTEMPT_TIMEOUT -> CANDIDATE_UNRESOLVED
+STAGE1_ATTEMPT_RUNNING -> ATTEMPT_TIMEOUT -> CANDIDATE_UNRESOLVED
+STAGE2_ATTEMPT_RUNNING -> ATTEMPT_TIMEOUT -> CANDIDATE_UNRESOLVED
 any active state -> STOP_REQUESTED -> CANCELLING -> BATCH_FINISHED
 ```
 
@@ -615,9 +715,11 @@ edge flag, or a failure reason.
    `run_context`.
 3. For legacy resolutions 10, 11, and 16, run batches from seed offsets
    `(0, 0)`, `(+/- half-pitch, 0)`, `(0, +/- half-pitch)`, and several larger
-   in-window offsets. Retain the original seed for every attempt in a batch.
-   Repeat each condition at least three times. Label boundary-clipped runs as
-   a separate series.
+   in-window offsets. In the current diagnostic module, retain the original
+   seed for every attempt so seed-offset behaviour can be measured. In the
+   future production verifier, enable the documented seed update and persist
+   both the previous and next seed for every attempt. Repeat each condition at
+   least three times. Label boundary-clipped runs as a separate series.
 4. Do not interpret `diagnostic_complete` as POI acceptance. It only means two
    raw scans were independently bounded and were not edge fits. Timeouts, a
    busy optimizer, malformed scans, and exhausted edge/fit budgets remain
@@ -644,13 +746,15 @@ The gates should be explicit, individually logged, and initially conservative:
 | Window margin | Fit centre is not on/near an optimizer scan boundary | A boundary maximum suggests the spot was not contained. |
 | PSF plausibility | Sigma falls in a calibrated range | Rejects hot pixels and diffuse/clumped structures. |
 | Sampled-window support | Centre is inside the actual acquired XY coordinates, with margin | Prevents accepting an extrapolated fit; does not use seed displacement. |
-| Repeatability | Passing attempts agree around the median | Requires stability, not a lucky fit. |
+| Seed update audit | Previous seed, optimizer return, Gaussian centre, and next seed are persisted | Makes the optimizer walk toward the actual spot explainable. |
+| Final convergence | Current POI centre and Gaussian centre agree within 50 nm after a final-state optimizer run | Confirms the registered POI is centred on the fitted fluorescent spot. |
 
 Calibration must use a labelled set with at least stable single-looking spots,
 known clusters/artifacts, and repeats across the intended acquisition period.
 Report false-accept/false-reject rates separately for each gate and choose
-thresholds on held-out data.  Do not expose an unvalidated R2 threshold as a
-scientific guarantee.
+thresholds on held-out data.  Do not expose the `R2 > 0.6`, 50-400 nm sigma,
+or 50 nm final-centre thresholds as scientific guarantees until they are
+validated on the intended hardware and sample preparation.
 
 ## Failure, stop, and recovery semantics
 
@@ -677,15 +781,17 @@ Use a deterministic mock optimizer that emits `RefocusResult` asynchronously.
 
 | Test | Expected result |
 |---|---|
-| Two good, consistent attempts | Early optical verification, one POI at median coordinate. |
-| First attempt fails; next two pass | Accepted; no one-shot rejection. |
-| Four failed fit attempts | Rejected only after attempt four; all reasons retained. |
-| Two passes with large spread | Rejected after full budget as non-repeatable. |
+| Stage 1 worthy on first attempt, Stage 2 fits on first attempt | Optical verification and one POI registered at the fitted Gaussian centre. |
+| Stage 1 needs several optimizer passes before `WorthyCandidate()` | Seed updates are persisted and candidate enters FinalState when the gate passes. |
+| Stage 1 four attempts never satisfy `WorthyCandidate()` | Rejected only after attempt four; all failed gates retained. |
+| Stage 2 needs several optimizer passes before the 50 nm centre check passes | Accepted when `Fits()` passes; all intermediate centres are retained. |
+| Stage 2 five attempts never satisfy `Fits()` | Rejected only after attempt five; no POI is registered. |
 | Optimizer fallback position + `xy_fit_success=False` | Fails fit gate even with zero displacement. |
 | Missing quality payload | Unresolved; no POI. |
 | Timeout and late completion | One timeout record; late event cannot alter state. |
 | Foreign caller tag | Ignored. |
 | Candidate-specific tags | Results cannot cross-contaminate queued candidates. |
+| Missing separate POI centre and Gaussian centre in FinalState | Unresolved; the 50 nm check cannot be fabricated from one coordinate. |
 | Existing-POI deconfliction | No overwrite; duplicate disposition recorded. |
 | Name collision | Deterministic suffix and audit record. |
 | Stop during active attempt | Safe cancellation, unstarted candidates skipped. |
@@ -736,11 +842,15 @@ for the single-emitter claim.
 1. Repair and test the optimizer issues in the critical audit, then run the
    controlled seed-offset/resolution experiment.
 2. Add and test the backwards-compatible optimizer result contract.
-3. Implement the verifier data classes, one-time signal connection, watchdog,
-   and two-to-four-attempt state machine.
-4. Add audit persistence and the stable naming helper.
-5. Add deconfliction only after its merge radius is calibrated.
-6. Calibrate gates, then wire the verifier into the multi-scale master task.
+3. Add explicit result fields for optimizer return position, Gaussian centre,
+   fit success, R2, sigma, sampled support, and edge status.
+4. Implement the verifier data classes, one-time signal connection, watchdog,
+   Stage 1 `WorthyCandidate()` loop, seed-update audit, and Stage 2
+   final-state convergence loop.
+5. Add audit persistence, `PoiManagerLogic` registration on `Fits()`, and the
+   stable naming helper.
+6. Add deconfliction only after its merge radius is calibrated.
+7. Calibrate gates, then wire the verifier into the multi-scale master task.
 
 Do not replace the existing `AutoNVFinderLogic` one-pass path until the new
 module passes its mock and calibration tests.  The old path can remain a
@@ -753,10 +863,15 @@ downstream stage for `POIExtractor`.
 |---|---|
 | ODMR in v1 | Excluded. |
 | HBT in v1 | Excluded. |
-| Rejections | Only after 2–4 completed normal attempts; no one-shot gate rejection. |
-| Success | Two passing, mutually consistent optical localizations; may complete early. |
+| Stage 1 attempts | Run optimizer up to four times; enter FinalState only when `WorthyCandidate()` passes. |
+| Stage 2 attempts | Run optimizer up to five more times; then check POI centre vs Gaussian centre after each attempt. |
+| Seed update | Enabled in the planned verifier; persist previous seed, optimizer return, Gaussian centre, and chosen next seed. |
+| Rejections | Only after the active stage exhausts its attempt budget; no one-shot gate rejection. |
+| Success | `WorthyCandidate()` in Stage 1 plus `Fits()` in Stage 2; add the accepted centre to `PoiManagerLogic`. |
 | Failed hardware/timeout | `unresolved`, not rejected. |
-| R2 | Requires a new optimizer result contract; no inferred R2. |
+| WorthyCandidate | Requires fit success, sampled-support check, no edge fit, 50-400 nm XY sigma, and `R2 > 0.6`. |
+| Final centre tolerance | `distance_xy(centre(POI), centre(Gaussian)) <= 50 nm` after a final-state optimizer attempt. |
+| R2 | Requires raw optimizer scan/model evidence in the optimizer result contract; no inferred R2 from legacy return alone. |
 | Seed displacement | Diagnostic only in v1; current optimizer defects make it unsafe as a gate. |
 | POI name | Stable `NV_<roi>_<region>_<candidate-token>`, not a list index. |
 | Audit trail | Persist every attempt outside POI Manager. |

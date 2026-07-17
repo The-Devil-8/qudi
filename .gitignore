@@ -42,3 +42,8 @@ __pycache__/
 *.Pdf
 *.png
 
+#text files
+
+#*.txt
+/20260716
+
