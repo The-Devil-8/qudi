@@ -9,9 +9,9 @@ import json
 # -----------------------------------------------------------------------------
 # Set these to the coordinates of your actual, stable reference spot!
 # You can find these by manually optimizing a bright spot in Qudi.
-BASE_X = 10.0e-6
-BASE_Y = 10.0e-6
-BASE_Z = 5.0e-6
+BASE_X = 109.92343077292014e-6
+BASE_Y = 86.95113854439189e-6
+BASE_Z = 19.60795420850365e-6
 
 # -----------------------------------------------------------------------------
 # Connection
