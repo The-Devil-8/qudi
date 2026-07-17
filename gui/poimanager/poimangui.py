@@ -243,6 +243,7 @@ class PoiManagerGui(GUIBase):
     poimanagerlogic = Connector(interface='PoiManagerLogic')
     scannerlogic = Connector(interface='ConfocalLogic')
     auto_nv_finder = Connector(interface='AutoNVFinderLogic', optional=True)
+    multi_scale_auto_nv_finder = Connector(interface='MultiScaleAutoNVFinderLogic', optional=True)
 
     # declare signals
     sigTrackPeriodChanged = QtCore.Signal(float)
@@ -270,6 +271,7 @@ class PoiManagerGui(GUIBase):
         self.__poi_selector_active = False  # Flag indicating if the poi selector is active
 
         self._auto_nv_finder_widget = None  # Auto NV Finder dock widget
+        self._multi_scale_auto_nv_finder_widget = None # Multi Scale Auto NV Finder dock widget
         return
 
     def on_activate(self):
@@ -320,6 +322,9 @@ class PoiManagerGui(GUIBase):
 
         # Initialize Auto NV Finder dock widget (if logic module is loaded)
         self.__init_auto_nv_finder_dock()
+        
+        # Initialize Multi Scale Auto NV Finder dock widget (if logic module is loaded)
+        self.__init_multi_scale_auto_nv_finder_dock()
 
         self._mw.show()
         return
@@ -332,6 +337,10 @@ class PoiManagerGui(GUIBase):
         if self._auto_nv_finder_widget is not None:
             self._auto_nv_finder_widget.cleanup()
             self._auto_nv_finder_widget = None
+            
+        if self._multi_scale_auto_nv_finder_widget is not None:
+            self._multi_scale_auto_nv_finder_widget.cleanup()
+            self._multi_scale_auto_nv_finder_widget = None
 
         self.toggle_poi_selector(False)
         self.__disconnect_control_signals_to_logic()
@@ -414,6 +423,41 @@ class PoiManagerGui(GUIBase):
         except Exception as e:
             self.log.warning('Failed to initialize Auto NV Finder dock: {0}'.format(e))
             self._auto_nv_finder_widget = None
+
+    def __init_multi_scale_auto_nv_finder_dock(self):
+        """Initialize the Multi-Scale Auto NV Finder dock widget.
+        
+        Only creates the widget if the MultiScaleAutoNVFinderLogic connector is available.
+        """
+        try:
+            if not self.multi_scale_auto_nv_finder.is_connected:
+                self.log.info('MultiScaleAutoNVFinderLogic not connected — '
+                              'Multi-Scale Auto NV Finder dock widget will not be created.')
+                return
+        except Exception:
+            self.log.info('MultiScaleAutoNVFinderLogic connector not available — '
+                          'Multi-Scale Auto NV Finder dock widget will not be created.')
+            return
+
+        try:
+            from gui.poimanager.multi_scale_auto_nv_finder_widget import MultiScaleAutoNVFinderWidget
+
+            view_widget = self._mw.roi_map_ViewWidget
+
+            self._multi_scale_auto_nv_finder_widget = MultiScaleAutoNVFinderWidget(
+                multi_scale_logic=self.multi_scale_auto_nv_finder(),
+                view_widget=view_widget,
+                parent=self._mw
+            )
+
+            self._mw.addDockWidget(
+                QtCore.Qt.BottomDockWidgetArea,
+                self._multi_scale_auto_nv_finder_widget)
+
+            self.log.info('Multi-Scale Auto NV Finder dock widget initialized.')
+        except Exception as e:
+            self.log.warning('Failed to initialize Multi-Scale Auto NV Finder dock: {0}'.format(e))
+            self._multi_scale_auto_nv_finder_widget = None
 
     def __init_roi_scan_image(self):
         # Get the color scheme

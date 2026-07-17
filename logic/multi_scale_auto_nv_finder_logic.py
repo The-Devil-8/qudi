@@ -55,6 +55,7 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
     sigMultiScaleComplete = QtCore.Signal(dict)
     sigLogMessage = QtCore.Signal(str)
     sigQueueUpdated = QtCore.Signal(int, int) # (processed, total)
+    sigVisualUpdate = QtCore.Signal(str, object) # (name, numpy_array)
 
     def __init__(self, config, **kwargs):
         super().__init__(config=config, **kwargs)
@@ -240,6 +241,9 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
 
         # 1. Process cell region
         cell_result = self._cell_processor.process(image)
+        if hasattr(cell_result, 'processable_mask'):
+            # Emit processable zone mask for GUI visualization
+            self.sigVisualUpdate.emit('Processable Zone Mask', cell_result.processable_mask)
         
         # 2. Extract POI candidates
         extraction_result = self._poi_extractor.extract(
