@@ -32,3 +32,9 @@
 # log files
 *.log
 *.log.*
+
+#output and data
+*.pdf
+*.png
+*.npz
+*.txt
