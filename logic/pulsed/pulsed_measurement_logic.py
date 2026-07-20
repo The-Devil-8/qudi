@@ -184,6 +184,10 @@ class PulsedMeasurementLogic(GenericLogic):
                         'fit_function': 'sine',
                         'estimator': 'generic'
                     }
+                    'Linear': {
+                        'fit_function': 'linear',
+                        'estimator': 'generic'
+                    }
                 }
             }
             self.fc.load_from_dict(default_fits)
