@@ -40,13 +40,6 @@
 
 /Confocal2
 
-#Calibration
-/CalibrationData
-
-/20260716
-
-/Confocal2
-
 #output and data
 *.pdf
 *.npz
