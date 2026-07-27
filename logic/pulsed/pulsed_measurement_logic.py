@@ -177,6 +177,21 @@ class PulsedMeasurementLogic(GenericLogic):
         if 'fits' in self._statusVariables and isinstance(self._statusVariables.get('fits'), dict):
             self.fc.load_from_dict(self._statusVariables['fits'])
 
+        if not self.fc.fit_list:
+            default_fits = {
+                '1d': {
+                    'Sine': {
+                        'fit_function': 'sine',
+                        'estimator': 'generic'
+                    }
+                    'Linear': {
+                        'fit_function': 'linear',
+                        'estimator': 'generic'
+                    }
+                }
+            }
+            self.fc.load_from_dict(default_fits)
+
         # Turn off pulse generator
         self.pulse_generator_off()
 
