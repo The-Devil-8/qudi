@@ -32,3 +32,10 @@
 # log files
 *.log
 *.log.*
+
+#Calibration
+/CalibrationData
+
+/20260716
+
+/Confocal2
