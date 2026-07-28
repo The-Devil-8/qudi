@@ -478,9 +478,9 @@ class ScanRegionQueue:
     # False positive filtering
     # ------------------------------------------------------------------
 
-    def filter_false_positives(self, min_long_dim_um=20.0,
-                               min_short_dim_um=10.0,
-                               min_area_um2=200.0,
+    def filter_false_positives(self, min_long_dim_um=15, #20.0,
+                               min_short_dim_um=5.0, #10
+                               min_area_um2=100.0,  #200
                                max_area_um2=5000.0,
                                min_peak_intensity=None,
                                background_median=None):
@@ -526,7 +526,7 @@ class ScanRegionQueue:
             ``'rejection_reasons'`` (list of ``(region_id, reason)``).
         """
         if min_peak_intensity is None and background_median is not None:
-            min_peak_intensity = 2.0 * background_median
+            min_peak_intensity = background_median # 2.0 * background_median
 
         accepted = []
         rejected = []
