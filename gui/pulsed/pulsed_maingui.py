@@ -385,6 +385,7 @@ class PulsedMeasurementGui(GUIBase):
         self._pa.ana_param_x_axis_start_ScienDSpinBox.editingFinished.connect(self.measurement_settings_changed)
         self._pa.ana_param_x_axis_inc_ScienDSpinBox.editingFinished.connect(self.measurement_settings_changed)
         self._pa.ana_param_num_laser_pulse_SpinBox.editingFinished.connect(self.measurement_settings_changed)
+        self._pa.ana_param_log_spacing_CheckBox.stateChanged.connect(self.measurement_settings_changed)
 
         self._pa.ana_param_record_length_DoubleSpinBox.editingFinished.connect(self.fast_counter_settings_changed)
         self._pa.ana_param_fc_bins_ComboBox.currentIndexChanged.connect(self.fast_counter_settings_changed)
@@ -543,6 +544,7 @@ class PulsedMeasurementGui(GUIBase):
         self._pa.ana_param_x_axis_start_ScienDSpinBox.editingFinished.disconnect()
         self._pa.ana_param_x_axis_inc_ScienDSpinBox.editingFinished.disconnect()
         self._pa.ana_param_num_laser_pulse_SpinBox.editingFinished.disconnect()
+        self._pa.ana_param_log_spacing_CheckBox.stateChanged.disconnect()
 
         self._pa.ana_param_record_length_DoubleSpinBox.editingFinished.disconnect()
         self._pa.ana_param_fc_bins_ComboBox.currentIndexChanged.disconnect()
@@ -766,6 +768,7 @@ class PulsedMeasurementGui(GUIBase):
             self._pa.ana_param_x_axis_start_ScienDSpinBox.setEnabled(False)
             self._pa.ana_param_x_axis_inc_ScienDSpinBox.setEnabled(False)
             self._pa.ana_param_num_laser_pulse_SpinBox.setEnabled(False)
+            self._pa.ana_param_log_spacing_CheckBox.setEnabled(False)
             self._pa.ana_param_record_length_DoubleSpinBox.setEnabled(False)
             self._pa.ext_control_use_mw_CheckBox.setEnabled(False)
             self._pa.ana_param_fc_bins_ComboBox.setEnabled(False)
@@ -814,6 +817,7 @@ class PulsedMeasurementGui(GUIBase):
                 self._pa.ana_param_x_axis_start_ScienDSpinBox.setEnabled(True)
                 self._pa.ana_param_x_axis_inc_ScienDSpinBox.setEnabled(True)
                 self._pa.ana_param_num_laser_pulse_SpinBox.setEnabled(True)
+                self._pa.ana_param_log_spacing_CheckBox.setEnabled(True)
                 self._pa.ana_param_record_length_DoubleSpinBox.setEnabled(True)
             if self._mw.action_run_stop.isChecked():
                 self._mw.action_run_stop.toggle()
@@ -2653,14 +2657,19 @@ class PulsedMeasurementGui(GUIBase):
             settings_dict['laser_ignore_list'].append(-1)
         settings_dict['alternating'] = self._pa.ana_param_alternating_CheckBox.isChecked()
         settings_dict['number_of_lasers'] = self._pa.ana_param_num_laser_pulse_SpinBox.value()
+        settings_dict['log_spacing'] = self._pa.ana_param_log_spacing_CheckBox.isChecked()
         vals_start = self._pa.ana_param_x_axis_start_ScienDSpinBox.value()
-        vals_incr = self._pa.ana_param_x_axis_inc_ScienDSpinBox.value()
+        vals_stop = self._pa.ana_param_x_axis_inc_ScienDSpinBox.value()
         num_of_ticks = max(1, settings_dict['number_of_lasers'] - len(
             settings_dict['laser_ignore_list']))
         if settings_dict['alternating'] and num_of_ticks > 1:
             num_of_ticks //= 2
-        controlled_variable = np.arange(num_of_ticks, dtype=float)
-        settings_dict['controlled_variable'] = controlled_variable * vals_incr + vals_start
+        
+        if settings_dict['log_spacing']:
+            controlled_variable = np.geomspace(vals_start, vals_stop, num_of_ticks)
+        else:
+            controlled_variable = np.linspace(vals_start, vals_stop, num_of_ticks)
+        settings_dict['controlled_variable'] = controlled_variable
 
         self.pulsedmasterlogic().set_measurement_settings(settings_dict)
         return
@@ -2678,6 +2687,7 @@ class PulsedMeasurementGui(GUIBase):
         self._pa.ana_param_num_laser_pulse_SpinBox.blockSignals(True)
         self._pa.ana_param_x_axis_start_ScienDSpinBox.blockSignals(True)
         self._pa.ana_param_x_axis_inc_ScienDSpinBox.blockSignals(True)
+        self._pa.ana_param_log_spacing_CheckBox.blockSignals(True)
         self._pa.ana_param_invoke_settings_CheckBox.blockSignals(True)
         self._pe.laserpulses_ComboBox.blockSignals(True)
         self._as.ana_param_x_axis_name_LineEdit.blockSignals(True)
@@ -2702,6 +2712,8 @@ class PulsedMeasurementGui(GUIBase):
                 self._pa.ana_param_ignore_last_CheckBox.setChecked(True)
             else:
                 self._pa.ana_param_ignore_last_CheckBox.setChecked(False)
+        if 'log_spacing' in settings_dict:
+            self._pa.ana_param_log_spacing_CheckBox.setChecked(settings_dict['log_spacing'])
         if 'controlled_variable' in settings_dict:
             if len(settings_dict['controlled_variable']) < 1:
                 self._pa.ana_param_x_axis_start_ScienDSpinBox.setValue(0)
@@ -2715,8 +2727,7 @@ class PulsedMeasurementGui(GUIBase):
                 self._pa.ana_param_x_axis_start_ScienDSpinBox.setValue(
                     settings_dict['controlled_variable'][0])
                 self._pa.ana_param_x_axis_inc_ScienDSpinBox.setValue(
-                    settings_dict['controlled_variable'][1] - settings_dict['controlled_variable'][
-                        0])
+                    settings_dict['controlled_variable'][-1])
         if 'invoke_settings' in settings_dict:
             self._pa.ana_param_invoke_settings_CheckBox.setChecked(settings_dict['invoke_settings'])
             self.toggle_measurement_settings_editor(settings_dict['invoke_settings'])
@@ -2749,6 +2760,7 @@ class PulsedMeasurementGui(GUIBase):
         self._pa.ana_param_num_laser_pulse_SpinBox.blockSignals(False)
         self._pa.ana_param_x_axis_start_ScienDSpinBox.blockSignals(False)
         self._pa.ana_param_x_axis_inc_ScienDSpinBox.blockSignals(False)
+        self._pa.ana_param_log_spacing_CheckBox.blockSignals(False)
         self._pa.ana_param_invoke_settings_CheckBox.blockSignals(False)
         self._pe.laserpulses_ComboBox.blockSignals(False)
 
@@ -2795,6 +2807,7 @@ class PulsedMeasurementGui(GUIBase):
             self._pa.ana_param_x_axis_start_ScienDSpinBox.setEnabled(False)
             self._pa.ana_param_x_axis_inc_ScienDSpinBox.setEnabled(False)
             self._pa.ana_param_num_laser_pulse_SpinBox.setEnabled(False)
+            self._pa.ana_param_log_spacing_CheckBox.setEnabled(False)
             self._pa.ana_param_record_length_DoubleSpinBox.setEnabled(False)
             self._pa.ana_param_ignore_first_CheckBox.setEnabled(False)
             self._pa.ana_param_ignore_last_CheckBox.setEnabled(False)
@@ -2803,6 +2816,7 @@ class PulsedMeasurementGui(GUIBase):
             self._pa.ana_param_x_axis_start_ScienDSpinBox.setEnabled(True)
             self._pa.ana_param_x_axis_inc_ScienDSpinBox.setEnabled(True)
             self._pa.ana_param_num_laser_pulse_SpinBox.setEnabled(True)
+            self._pa.ana_param_log_spacing_CheckBox.setEnabled(True)
             self._pa.ana_param_record_length_DoubleSpinBox.setEnabled(True)
             self._pa.ana_param_ignore_first_CheckBox.setEnabled(True)
             self._pa.ana_param_ignore_last_CheckBox.setEnabled(True)
@@ -3174,10 +3188,13 @@ class PulsedMeasurementGui(GUIBase):
             else:
                 y_data = self.pulsedmasterlogic().raw_data
         else:
-            if laser_index == 0:
-                y_data = np.sum(self.pulsedmasterlogic().laser_data, axis=0)
+            if len(self.pulsedmasterlogic().laser_data.shape) > 1:
+                if laser_index == 0:
+                    y_data = np.sum(self.pulsedmasterlogic().laser_data, axis=0)
+                else:
+                    y_data = self.pulsedmasterlogic().laser_data[laser_index - 1]
             else:
-                y_data = self.pulsedmasterlogic().laser_data[laser_index - 1]
+                y_data = self.pulsedmasterlogic().laser_data
 
         # Calculate the x-axis of the laser plot here
         bin_width = self.pulsedmasterlogic().fast_counter_settings['bin_width']
