@@ -638,6 +638,35 @@
           <item row="0" column="1">
            <widget class="QComboBox" name="ana_param_fc_bins_ComboBox"/>
           </item>
+          <item row="1" column="0">
+           <widget class="QLabel" name="ana_param_stop_sweep_Label">
+            <property name="text">
+             <string>Stop sweep:</string>
+            </property>
+            <property name="alignment">
+             <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="QSpinBox" name="ana_param_stop_sweep_SpinBox">
+            <property name="sizePolicy">
+             <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+              <horstretch>0</horstretch>
+              <verstretch>0</verstretch>
+             </sizepolicy>
+            </property>
+            <property name="minimum">
+             <number>0</number>
+            </property>
+            <property name="maximum">
+             <number>10000000</number>
+            </property>
+            <property name="value">
+             <number>0</number>
+            </property>
+           </widget>
+          </item>
           <item row="2" column="0">
            <widget class="QLabel" name="label_2">
             <property name="text">
