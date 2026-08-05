@@ -1,14 +1,25 @@
 # -*- coding: utf-8 -*-
-"""Diagnostic, repeated optical verification for extracted NV candidates.
+"""Repeated optical verification for extracted NV candidates.
 
 This module deliberately wraps the existing :class:`OptimizerLogic` without
 changing it.  The legacy optimizer only publishes a final coordinate and may
 fall back to its seed when a fit fails, so this module archives its raw XY scan
 and re-analyses that scan with :class:`logic.optimizer2.Optimizer2D`.
 
-Version one is diagnostic-only: it never creates or rejects POIs and it has no
-ODMR dependency.  Its purpose is to collect properly correlated calibration
-data before optical acceptance gates are enabled.
+Supports three operating modes:
+
+  - ``diagnostic`` (default): collects calibration data only.
+    No automatic acceptance/rejection or POI registration.
+  - ``hybrid``: applies optical acceptance gates AND registers accepted POIs
+    to PoiManagerLogic, while still collecting the full calibration audit.
+    This is the recommended mode for initial production use.
+  - ``production``: applies gates and registers POIs.  Suppresses verbose
+    per-attempt logging to reduce overhead for high-throughput runs.
+
+The ``hybrid`` mode preserves the calibration pipeline established in
+diagnostic mode, adding only acceptance gates and POI registration on top.
+This enables real experiment loop integration while continuing to build
+the calibration dataset needed for future drift compensation modules.
 """
 
 from __future__ import division
@@ -305,7 +316,7 @@ class NVCandidateVerifier(GenericLogic):
     savelogic = Connector(interface='SaveLogic', optional=True)
     poimanagerlogic = Connector(interface='PoiManagerLogic', optional=True)
 
-    diagnostic_only = StatusVar('diagnostic_only', True)
+    operating_mode = StatusVar('operating_mode', 'diagnostic')
     minimum_attempts = StatusVar('minimum_attempts', 2)
     maximum_attempts = StatusVar('maximum_attempts', 4)
     stage1_max_attempts = StatusVar('stage1_max_attempts', 4)
@@ -325,9 +336,47 @@ class NVCandidateVerifier(GenericLogic):
     sigCandidateVerificationUpdated = QtCore.Signal(object)
     sigVerificationFinished = QtCore.Signal(object)
     sigVerificationError = QtCore.Signal(str, str)
+    sigCandidateAccepted = QtCore.Signal(object)
+    sigCandidateRejected = QtCore.Signal(object)
+
+    # ------------------------------------------------------------------
+    # Backward-compatible property for configs still using diagnostic_only
+    # ------------------------------------------------------------------
+    @property
+    def diagnostic_only(self):
+        """Backward-compatible read accessor.
+
+        Returns True when operating_mode is 'diagnostic', False otherwise.
+        Existing code that checks ``self.diagnostic_only`` will continue to
+        work without modification.
+        """
+        return self._effective_mode() == 'diagnostic'
+
+    @diagnostic_only.setter
+    def diagnostic_only(self, value):
+        """Backward-compatible write accessor.
+
+        If a Qudi config still contains ``diagnostic_only: True``, this maps
+        it to ``operating_mode = 'diagnostic'``.  ``diagnostic_only: False``
+        maps to ``operating_mode = 'hybrid'``.
+        """
+        if isinstance(value, bool):
+            self.operating_mode = 'diagnostic' if value else 'hybrid'
+
+    def _effective_mode(self):
+        """Return the validated operating mode string."""
+        mode = str(self.operating_mode).strip().lower()
+        if mode not in ('diagnostic', 'hybrid', 'production'):
+            self.log.warning(
+                'Unknown operating_mode "{0}", falling back to "diagnostic".'
+                .format(self.operating_mode))
+            return 'diagnostic'
+        return mode
 
     def on_activate(self):
         """Connect once to the optimizer and initialise the watchdog."""
+        self.log.info('NVCandidateVerifier activating in "{0}" mode.'.format(
+            self._effective_mode()))
         self._optimizer = self.optimizerlogic()
         self._active = False
         self._stop_requested = False
@@ -397,6 +446,7 @@ class NVCandidateVerifier(GenericLogic):
             'audit_directory': self._poi_logger.run_directory,
             'started_utc': _utc_timestamp(),
             'diagnostic_only': bool(self.diagnostic_only),
+            'operating_mode': self._effective_mode(),
             'run_context': run_context or {},
             'candidates': records,
             'status': 'running',
@@ -430,6 +480,7 @@ class NVCandidateVerifier(GenericLogic):
 
     def _policy_snapshot(self):
         return {
+            'operating_mode': self._effective_mode(),
             'diagnostic_only': bool(self.diagnostic_only),
             'stage1_max_attempts': int(self.stage1_max_attempts),
             'stage2_max_attempts': int(self.stage2_max_attempts),
@@ -767,6 +818,7 @@ class NVCandidateVerifier(GenericLogic):
                     candidate, 'rejected',
                     rejection_reason='stage1_budget_exhausted:{0}'.format(
                         ','.join(attempt.get('gate_failures', []))))
+                self.sigCandidateRejected.emit(dict(candidate))
                 return 'rejected'
             return 'retry'
 
@@ -779,6 +831,7 @@ class NVCandidateVerifier(GenericLogic):
                     candidate, 'rejected',
                     rejection_reason='final_state_budget_exhausted:{0}'.format(
                         ','.join(attempt.get('gate_failures', []))))
+                self.sigCandidateRejected.emit(dict(candidate))
                 return 'rejected'
             return 'retry'
 
@@ -801,22 +854,48 @@ class NVCandidateVerifier(GenericLogic):
         candidate['accepted_position_m'] = accepted_position
         candidate['status'] = 'optically_verified'
         poi_name = self._candidate_poi_name(candidate)
+
+        mode = self._effective_mode()
         registration_status = 'diagnostic_not_registered'
-        if (not bool(self.diagnostic_only) and bool(self.auto_register_poi) and
-                self.poimanagerlogic() is not None):
-            try:
-                self.poimanagerlogic().add_poi(
-                    position=np.array(accepted_position), name=poi_name)
-                registration_status = 'registered'
-            except Exception as error:
-                registration_status = 'registration_failed:{0}'.format(error)
-                candidate['status'] = 'registration_failed'
+
+        # In hybrid and production modes, register the POI
+        if mode in ('hybrid', 'production'):
+            if bool(self.auto_register_poi) and self.poimanagerlogic() is not None:
+                try:
+                    self.poimanagerlogic().add_poi(
+                        position=np.array(accepted_position), name=poi_name)
+                    registration_status = 'registered'
+                except Exception as error:
+                    registration_status = 'registration_failed:{0}'.format(error)
+                    candidate['status'] = 'registration_failed'
+            else:
+                registration_status = 'poi_manager_unavailable'
+
         self._finalize_logged_candidate(
             candidate, 'accepted',
             accepted_position_m=accepted_position,
             poi_name=poi_name,
             registration_status=registration_status)
+
+        # Emit acceptance signal for downstream consumers (orchestrator,
+        # PulsedMeasurementExecutor).  In diagnostic mode the signal is
+        # still emitted so that GUI can update, but the candidate record
+        # will carry 'diagnostic_not_registered' as its registration_status.
+        accepted_record = {
+            'candidate_id': candidate['candidate_id'],
+            'candidate_label': candidate['candidate_label'],
+            'accepted_position_m': accepted_position,
+            'poi_name': poi_name,
+            'registration_status': registration_status,
+            'operating_mode': mode,
+            'region_id': candidate.get('region_id', ''),
+            'overall_score': candidate.get('overall_score'),
+            'stage1_attempts': candidate.get('stage1_attempts', 0),
+            'final_state_attempts': candidate.get('final_state_attempts', 0),
+        }
+        self.sigCandidateAccepted.emit(accepted_record)
         return candidate['status']
+
 
     def _candidate_poi_name(self, candidate):
         region = _safe_slug(candidate.get('region_id') or 'R000', 'R000')

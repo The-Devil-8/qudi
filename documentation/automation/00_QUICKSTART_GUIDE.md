@@ -17,19 +17,40 @@ This guide covers how to launch, monitor, and retrieve data from the **Multi-Sca
 
 ## 2. Using the GUI
 
-The dock contains three sections: **Settings**, **Logs**, and **Intermediate Visuals**.
+The dock contains five sections: **Settings**, **Experiment Loop**, **Experiment Progress**, **Logs**, and **Intermediate Visuals**.
 
-### Settings
+### Settings (Scanning Parameters)
 - **Macro FOV**: The size of the initial, coarse overview scan (e.g., 100 μm).
 - **Micro Margin**: Padding added around detected cells to ensure the entire cell body is captured in the high-res micro-scan.
 - **Max Regions**: The maximum number of cell clusters to process before stopping automatically.
 
+### Experiment Loop (T1/ODMR Parameters)
+- **No. of cells**: How many cell ROIs to analyze (default: 5).
+- **NVs per cell**: Target NVs to find and measure per cell (default: 3). If not met after initial scan, the cell is re-scanned (up to 3 times).
+- **Enable pulsed measurement**: Enable T1/ODMR measurement after each verified NV. **Only enable when pulsed hardware is configured.**
+- **Measurement ensemble**: Name of the T1/ODMR pulse sequence ensemble (must be pre-created in the Pulsed GUI).
+- **Laser pulse ensemble**: Name of the laser re-pump ensemble (must be pre-created in the Pulsed GUI).
+- **POI non-repetition radius**: Minimum distance (µm) between measured NVs to prevent re-measuring the same NV after a re-scan.
+
+### Experiment Progress (Real-Time)
+- **Cells completed**: X / Y progress.
+- **NVs (this cell)**: X / Y progress for the current cell.
+- **Total NVs measured**: Running count across all cells.
+
 ### Running
+
+> **Pre-requisite (if pulsed measurement enabled):**
+> You must have created the T1 measurement and laser re-pump ensembles in the **Pulsed GUI** at least once manually. The automation loads them by name — it cannot create pulse sequences.
+
 1. Verify you have a physical sample loaded and the hardware is ready.
-2. Click **`▶ Start Multi-Scale`**.
-3. The pipeline will automatically step through its phases:
-   - `Macro Scanning` -> `Macro Segmentation` -> `Micro Scanning` -> `Micro Processing` -> `Verification`.
-4. You can click **`⏹ Stop`** at any time. The system will gracefully halt after finishing the current region.
+2. Set your target parameters in the Experiment Loop section.
+3. Click **`▶ Start Multi-Scale`**.
+4. The pipeline will automatically step through its phases:
+   - `Macro Scanning` -> `Macro Segmentation` -> For each cell:
+     - `Micro Scanning` -> `Micro Processing` -> `Verification` -> `Pulsed Measurement`*
+   - * Only if pulsed measurement is enabled
+5. Real-time progress updates in the **Experiment Progress** panel.
+6. You can click **`⏹ Stop`** at any time. The system will gracefully halt after finishing the current operation.
 
 ### The Overlay Map
 On the main confocal color image, bounding boxes will appear to indicate progress:
@@ -43,11 +64,80 @@ Switch to the **Intermediate Visuals** tab in the dock. During the `Micro Proces
 
 ## 3. Reviewing the Data
 
-Once the run is complete, the `NVCandidateVerifier` automatically saves two sets of data for every processed region:
-1. **Raw Arrays (`.npz`)**: Stored in `C:/Data/[Date]/`. Contains the micro-scan image, the background mask, processable mask, extraction score map, and candidate coordinates.
-2. **Analysis Logs (`.json`)**: Stored alongside the `.npz`. Contains the hardware drift vectors (offset_x, offset_y, offset_z) recorded during verification.
+Once the run is complete, three types of data are produced:
 
-To optimize the system and characterize hardware drift, run the analysis script on these files:
-```bash
-python tools/analyze_poi_verification_log.py --date YYYYMMDD
+### Verification Logs (Optical)
+The `NVCandidateVerifier` saves audit data for every processed region:
+1. **`manifest.json`**: Complete candidate records with acceptance/rejection reasons, optimizer fit parameters, displacement measurements.
+2. **`events.jsonl`**: Chronological event log (attempts, gates, registration).
+3. **Raw Arrays (`.npz`)**: Optimizer scan images per attempt.
+- **Location**: `C:/Data/[Date]/NVCandidateVerifier/[run_id]/`
+
+### Drift Tracking Data
+The `DriftTracker` records position snapshots at pre/post measurement events:
+- **`drift_records.json`**: Array of position records with timestamps, event types, [x,y,z] positions.
+- Use `DriftTracker.summary()` to get mean/max/std drift statistics.
+
+### Pulsed Measurement Data (if enabled)
+T1/ODMR data saved via standard Qudi `SaveLogic`:
+- **Location**: `C:/Data/[Date]/` with tag `auto_nv_[candidate_id]_[run_id]`
+- Data contains: controlled variable (tau), signal data, elapsed sweeps/time.
+
+## 4. Configuration Reference
+
+### Required Config Blocks (multi_scale_autoNV_confocal.cfg)
+
+```yaml
+logic:
+    multi_scale_auto_nv_finder:
+        module.Class: 'multi_scale_auto_nv_finder_logic.MultiScaleAutoNVFinderLogic'
+        target_cells: 5
+        target_nvs_per_cell: 3
+        poi_non_repetition_radius_m: 1.0e-6
+        max_rescans_per_cell: 3
+        enable_pulsed_measurement: False   # Set True when pulsed hardware ready
+        measurement_ensemble_name: ''      # e.g. 'T1_measurement'
+        laser_pulse_ensemble_name: ''      # e.g. 'laser_pulse_532nm'
+        connect:
+            confocallogic: 'scannerlogic'
+            nvcandidateverifier: 'nv_candidate_verifier'
+            pulsedmeasurementexecutor: 'pulsed_measurement_executor'
+            poimanagerlogic: 'poimanagerlogic'
+
+    nv_candidate_verifier:
+        module.Class: 'nv_candidate_verifier.NVCandidateVerifier'
+        operating_mode: 'hybrid'
+        connect:
+            optimizerlogic: 'optimizerlogic'
+            savelogic: 'savelogic'
+            poimanagerlogic: 'poimanagerlogic'
+
+    pulsed_measurement_executor:
+        module.Class: 'pulsed_measurement_executor.PulsedMeasurementExecutor'
+        measurement_timeout_s: 900.0       # 15 min safety timeout per NV
+        # connect:
+        #     pulsedmasterlogic: 'pulsedmasterlogic'  # Uncomment when ready
 ```
+
+### Enabling Pulsed Measurement
+
+When pulsed hardware is configured:
+1. Add `pulsedmasterlogic`, `pulsedmeasurementlogic`, `sequencegeneratorlogic` blocks to config
+2. Uncomment `pulsedmasterlogic` connector in `pulsed_measurement_executor`
+3. Set `enable_pulsed_measurement: True` in `multi_scale_auto_nv_finder`
+4. Set ensemble names to match your created sequences
+
+## 5. Quick Start Checklist
+
+- [ ] Config file points to `multi_scale_autoNV_confocal.cfg`
+- [ ] Hardware ready (scanner, counter, optimizer)
+- [ ] Confocal test scan verified
+- [ ] POI Manager open, ROI loaded
+- [ ] Multi-Scale dock visible
+- [ ] Target cells and NVs/cell set
+- [ ] (If pulsed) Ensembles created in Pulsed GUI
+- [ ] (If pulsed) Ensemble names entered in Multi-Scale dock
+- [ ] (If pulsed) `enable_pulsed_measurement` checked
+- [ ] Click **▶ Start Multi-Scale**
+- [ ] Monitor progress in Experiment Progress panel
+- [ ] Review data in `C:/Data/[Date]/`

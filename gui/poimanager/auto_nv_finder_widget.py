@@ -388,6 +388,7 @@ class AutoNVFinderWidget(QtWidgets.QDockWidget):
                 marker.remove_from_view()
         self._candidate_markers.clear()
 
+
     @staticmethod
     def _status_icon(status):
         """Return a status string with icon for the table."""
@@ -397,5 +398,258 @@ class AutoNVFinderWidget(QtWidgets.QDockWidget):
             'accepted':   '✅ Accepted',
             'rejected':   '❌ Rejected',
             'skipped':    '⏭️ Skipped',
+            'measured':   '📊 Measured',
+            'measuring':  '⏳ Measuring...',
         }
         return icons.get(status, status)
+
+
+class ExperimentControlPanel(QtWidgets.QGroupBox):
+    """Control panel for the full NV experiment loop parameters.
+
+    Provides GUI controls for:
+    - Target cells and NVs per cell
+    - Measurement and laser pulse ensemble names
+    - Z scan range and depth from surface
+    - POI non-repetition radius
+    - Pulsed measurement enable/disable
+    - Real-time experiment progress display
+
+    This panel is designed to be embedded alongside the existing
+    AutoNVFinderWidget in the POI Manager GUI.
+
+    See documentation/automation/24_full_experiment_loop.md for details.
+    """
+
+    def __init__(self, multi_scale_logic, parent=None):
+        """
+        Parameters
+        ----------
+        multi_scale_logic : MultiScaleAutoNVFinderLogic
+            Reference to the orchestrator logic module.
+        parent : QWidget, optional
+            Parent widget.
+        """
+        super().__init__('Experiment Loop Control', parent)
+        self._logic = multi_scale_logic
+        self._build_ui()
+        self._connect_signals()
+        self._sync_from_logic()
+
+    def _build_ui(self):
+        """Construct the UI programmatically."""
+        layout = QtWidgets.QVBoxLayout(self)
+
+        # --- Target parameters group ---
+        targets_group = QtWidgets.QGroupBox('Targets')
+        targets_layout = QtWidgets.QFormLayout(targets_group)
+
+        self.target_cells_spinbox = QtWidgets.QSpinBox()
+        self.target_cells_spinbox.setRange(1, 100)
+        self.target_cells_spinbox.setToolTip(
+            'Number of cell ROIs to analyze')
+        targets_layout.addRow('No. of cells:', self.target_cells_spinbox)
+
+        self.nvs_per_cell_spinbox = QtWidgets.QSpinBox()
+        self.nvs_per_cell_spinbox.setRange(1, 20)
+        self.nvs_per_cell_spinbox.setToolTip(
+            'Target number of NVs to measure per cell')
+        targets_layout.addRow('NVs per cell:', self.nvs_per_cell_spinbox)
+
+        layout.addWidget(targets_group)
+
+        # --- Measurement parameters group ---
+        measurement_group = QtWidgets.QGroupBox('Pulsed Measurement')
+        measurement_layout = QtWidgets.QFormLayout(measurement_group)
+
+        self.enable_pulsed_checkbox = QtWidgets.QCheckBox()
+        self.enable_pulsed_checkbox.setToolTip(
+            'Enable T1/ODMR measurement after each verified NV')
+        measurement_layout.addRow(
+            'Enable pulsed measurement:', self.enable_pulsed_checkbox)
+
+        self.measurement_name_edit = QtWidgets.QLineEdit()
+        self.measurement_name_edit.setPlaceholderText(
+            'e.g. T1_measurement')
+        self.measurement_name_edit.setToolTip(
+            'Ensemble name for the T1/ODMR measurement')
+        measurement_layout.addRow(
+            'Measurement ensemble:', self.measurement_name_edit)
+
+        self.laser_pulse_name_edit = QtWidgets.QLineEdit()
+        self.laser_pulse_name_edit.setPlaceholderText(
+            'e.g. laser_pulse_532nm')
+        self.laser_pulse_name_edit.setToolTip(
+            'Ensemble name for the laser re-pump pulse')
+        measurement_layout.addRow(
+            'Laser pulse ensemble:', self.laser_pulse_name_edit)
+
+        layout.addWidget(measurement_group)
+
+        # --- Scanning parameters group ---
+        scanning_group = QtWidgets.QGroupBox('Scanning')
+        scanning_layout = QtWidgets.QFormLayout(scanning_group)
+
+        self.z_scan_range_spinbox = QtWidgets.QDoubleSpinBox()
+        self.z_scan_range_spinbox.setRange(0.1, 50.0)
+        self.z_scan_range_spinbox.setDecimals(1)
+        self.z_scan_range_spinbox.setSuffix(' µm')
+        self.z_scan_range_spinbox.setToolTip(
+            'Z scan range for surface finding (next iteration)')
+        scanning_layout.addRow('Z scan range:', self.z_scan_range_spinbox)
+
+        self.z_depth_spinbox = QtWidgets.QDoubleSpinBox()
+        self.z_depth_spinbox.setRange(0.0, 20.0)
+        self.z_depth_spinbox.setDecimals(1)
+        self.z_depth_spinbox.setSuffix(' µm')
+        self.z_depth_spinbox.setToolTip(
+            'Depth below surface line to image '
+            '(Z = Z_SL - Z_depth)')
+        scanning_layout.addRow(
+            'Z depth from surface:', self.z_depth_spinbox)
+
+        self.poi_radius_spinbox = QtWidgets.QDoubleSpinBox()
+        self.poi_radius_spinbox.setRange(0.1, 10.0)
+        self.poi_radius_spinbox.setDecimals(1)
+        self.poi_radius_spinbox.setSuffix(' µm')
+        self.poi_radius_spinbox.setToolTip(
+            'POI non-repetition radius: candidates within this distance '
+            'of previously measured NVs are filtered out')
+        scanning_layout.addRow(
+            'POI non-repetition radius:', self.poi_radius_spinbox)
+
+        layout.addWidget(scanning_group)
+
+        # --- Progress display ---
+        progress_group = QtWidgets.QGroupBox('Experiment Progress')
+        progress_layout = QtWidgets.QFormLayout(progress_group)
+
+        self.cells_progress_label = QtWidgets.QLabel('0 / 0')
+        progress_layout.addRow('Cells completed:', self.cells_progress_label)
+
+        self.nvs_cell_progress_label = QtWidgets.QLabel('0 / 0')
+        progress_layout.addRow(
+            'NVs (this cell):', self.nvs_cell_progress_label)
+
+        self.total_nvs_label = QtWidgets.QLabel('0')
+        progress_layout.addRow('Total NVs measured:', self.total_nvs_label)
+
+        self.state_label = QtWidgets.QLabel('idle')
+        progress_layout.addRow('Pipeline state:', self.state_label)
+
+        layout.addWidget(progress_group)
+
+        # --- Control buttons ---
+        button_layout = QtWidgets.QHBoxLayout()
+        self.start_button = QtWidgets.QPushButton('▶ Start Experiment')
+        self.start_button.setToolTip('Start the full NV automation pipeline')
+        self.stop_button = QtWidgets.QPushButton('⏹ Stop')
+        self.stop_button.setEnabled(False)
+        self.stop_button.setToolTip('Gracefully stop the pipeline')
+        button_layout.addWidget(self.start_button)
+        button_layout.addWidget(self.stop_button)
+        layout.addLayout(button_layout)
+
+    def _connect_signals(self):
+        """Connect GUI widgets to logic and logic signals to GUI."""
+        # GUI → Logic
+        self.start_button.clicked.connect(self._on_start)
+        self.stop_button.clicked.connect(self._on_stop)
+        self.target_cells_spinbox.valueChanged.connect(
+            lambda v: setattr(self._logic, 'target_cells', v))
+        self.nvs_per_cell_spinbox.valueChanged.connect(
+            lambda v: setattr(self._logic, 'target_nvs_per_cell', v))
+        self.enable_pulsed_checkbox.toggled.connect(
+            lambda v: setattr(self._logic, 'enable_pulsed_measurement', v))
+        self.measurement_name_edit.textChanged.connect(
+            lambda v: setattr(
+                self._logic, 'measurement_ensemble_name', v))
+        self.laser_pulse_name_edit.textChanged.connect(
+            lambda v: setattr(
+                self._logic, 'laser_pulse_ensemble_name', v))
+        self.z_scan_range_spinbox.valueChanged.connect(
+            lambda v: setattr(self._logic, 'z_scan_range_m', v * 1e-6))
+        self.z_depth_spinbox.valueChanged.connect(
+            lambda v: setattr(
+                self._logic, 'z_depth_from_surface_m', v * 1e-6))
+        self.poi_radius_spinbox.valueChanged.connect(
+            lambda v: setattr(
+                self._logic, 'poi_non_repetition_radius_m', v * 1e-6))
+
+        # Logic → GUI
+        self._logic.sigStateChanged.connect(
+            self._update_state, QtCore.Qt.QueuedConnection)
+        self._logic.sigExperimentProgress.connect(
+            self._update_progress, QtCore.Qt.QueuedConnection)
+        self._logic.sigMultiScaleComplete.connect(
+            self._on_complete, QtCore.Qt.QueuedConnection)
+
+    def _sync_from_logic(self):
+        """Initialize GUI values from the logic StatusVars."""
+        self.target_cells_spinbox.setValue(int(self._logic.target_cells))
+        self.nvs_per_cell_spinbox.setValue(
+            int(self._logic.target_nvs_per_cell))
+        self.enable_pulsed_checkbox.setChecked(
+            bool(self._logic.enable_pulsed_measurement))
+        self.measurement_name_edit.setText(
+            str(self._logic.measurement_ensemble_name))
+        self.laser_pulse_name_edit.setText(
+            str(self._logic.laser_pulse_ensemble_name))
+        self.z_scan_range_spinbox.setValue(
+            float(self._logic.z_scan_range_m) * 1e6)
+        self.z_depth_spinbox.setValue(
+            float(self._logic.z_depth_from_surface_m) * 1e6)
+        self.poi_radius_spinbox.setValue(
+            float(self._logic.poi_non_repetition_radius_m) * 1e6)
+
+    @QtCore.Slot()
+    def _on_start(self):
+        """Handle Start Experiment button click."""
+        self.start_button.setEnabled(False)
+        self.stop_button.setEnabled(True)
+        self._logic.start_multi_scale_find()
+
+    @QtCore.Slot()
+    def _on_stop(self):
+        """Handle Stop button click."""
+        self._logic.stop_multi_scale_find()
+        self.stop_button.setEnabled(False)
+
+    @QtCore.Slot(str)
+    def _update_state(self, state):
+        """Update state display label."""
+        state_display = {
+            'idle': '⚪ Idle',
+            'macro_scanning': '🔍 Macro Scanning...',
+            'macro_segmentation': '🧩 Segmenting...',
+            'micro_scanning': '🔬 Micro Scanning...',
+            'micro_processing': '🎯 Processing...',
+            'verification': '⚙️ Verifying...',
+            'pulsed_measurement': '📊 Measuring...',
+        }.get(state, state.capitalize())
+        self.state_label.setText(state_display)
+
+        if state == 'idle':
+            self.start_button.setEnabled(True)
+            self.stop_button.setEnabled(False)
+
+    @QtCore.Slot(object)
+    def _update_progress(self, progress):
+        """Update progress labels from experiment progress dict."""
+        self.cells_progress_label.setText('{0} / {1}'.format(
+            progress.get('cells_completed', 0),
+            progress.get('target_cells', 0)))
+        self.nvs_cell_progress_label.setText('{0} / {1}'.format(
+            progress.get('nvs_this_cell', 0),
+            progress.get('target_nvs_per_cell', 0)))
+        self.total_nvs_label.setText(str(
+            progress.get('total_nvs_measured', 0)))
+
+    @QtCore.Slot(dict)
+    def _on_complete(self, final_stats):
+        """Handle experiment completion."""
+        self.start_button.setEnabled(True)
+        self.stop_button.setEnabled(False)
+        self.state_label.setText('✅ Complete ({0} cells, {1} NVs)'.format(
+            final_stats.get('cells_completed', 0),
+            final_stats.get('total_nvs_measured', 0)))

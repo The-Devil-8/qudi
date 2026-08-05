@@ -119,6 +119,69 @@ class MultiScaleAutoNVFinderWidget(QtWidgets.QDockWidget):
         param_layout.addRow("Max Regions:", self.max_regions_spinbox)
         self.main_layout.addWidget(param_group)
 
+        # --- Experiment Loop Parameters ---
+        experiment_group = QtWidgets.QGroupBox("Experiment Loop")
+        experiment_layout = QtWidgets.QFormLayout(experiment_group)
+
+        self.target_cells_spinbox = QtWidgets.QSpinBox()
+        self.target_cells_spinbox.setRange(1, 100)
+        self.target_cells_spinbox.setToolTip('Number of cell ROIs to analyze')
+        experiment_layout.addRow('No. of cells:', self.target_cells_spinbox)
+
+        self.nvs_per_cell_spinbox = QtWidgets.QSpinBox()
+        self.nvs_per_cell_spinbox.setRange(1, 20)
+        self.nvs_per_cell_spinbox.setToolTip('Target NVs to measure per cell')
+        experiment_layout.addRow('NVs per cell:', self.nvs_per_cell_spinbox)
+
+        self.enable_pulsed_checkbox = QtWidgets.QCheckBox()
+        self.enable_pulsed_checkbox.setToolTip(
+            'Enable T1/ODMR measurement after each verified NV')
+        experiment_layout.addRow(
+            'Enable pulsed measurement:', self.enable_pulsed_checkbox)
+
+        self.measurement_name_edit = QtWidgets.QLineEdit()
+        self.measurement_name_edit.setPlaceholderText('e.g. T1_measurement')
+        self.measurement_name_edit.setToolTip(
+            'PulsedMasterLogic ensemble name for T1/ODMR')
+        experiment_layout.addRow(
+            'Measurement ensemble:', self.measurement_name_edit)
+
+        self.laser_pulse_name_edit = QtWidgets.QLineEdit()
+        self.laser_pulse_name_edit.setPlaceholderText(
+            'e.g. laser_pulse_532nm')
+        self.laser_pulse_name_edit.setToolTip(
+            'Ensemble name for laser re-pump pulse')
+        experiment_layout.addRow(
+            'Laser pulse ensemble:', self.laser_pulse_name_edit)
+
+        self.poi_radius_spinbox = QtWidgets.QDoubleSpinBox()
+        self.poi_radius_spinbox.setRange(0.1, 10.0)
+        self.poi_radius_spinbox.setDecimals(1)
+        self.poi_radius_spinbox.setSuffix(' \u00b5m')
+        self.poi_radius_spinbox.setToolTip(
+            'POI non-repetition radius: candidates within this distance '
+            'of previously measured NVs are filtered out')
+        experiment_layout.addRow(
+            'POI non-repetition radius:', self.poi_radius_spinbox)
+
+        self.main_layout.addWidget(experiment_group)
+
+        # --- Real-time Progress Panel ---
+        progress_group = QtWidgets.QGroupBox("Experiment Progress")
+        exp_progress_layout = QtWidgets.QFormLayout(progress_group)
+
+        self.cells_progress_label = QtWidgets.QLabel('0 / 0')
+        exp_progress_layout.addRow('Cells completed:', self.cells_progress_label)
+
+        self.nvs_cell_progress_label = QtWidgets.QLabel('0 / 0')
+        exp_progress_layout.addRow(
+            'NVs (this cell):', self.nvs_cell_progress_label)
+
+        self.total_nvs_label = QtWidgets.QLabel('0')
+        exp_progress_layout.addRow('Total NVs measured:', self.total_nvs_label)
+
+        self.main_layout.addWidget(progress_group)
+
         # --- Tabs for Log and Visuals ---
         self.tabs = QtWidgets.QTabWidget()
         
@@ -148,6 +211,18 @@ class MultiScaleAutoNVFinderWidget(QtWidgets.QDockWidget):
         self.fov_spinbox.setValue(float(self._logic.coarse_fov_um))
         self.margin_spinbox.setValue(float(self._logic.bbox_margin_fraction))
         self.max_regions_spinbox.setValue(int(self._logic.max_regions_per_run))
+        # Experiment loop parameters
+        self.target_cells_spinbox.setValue(int(self._logic.target_cells))
+        self.nvs_per_cell_spinbox.setValue(
+            int(self._logic.target_nvs_per_cell))
+        self.enable_pulsed_checkbox.setChecked(
+            bool(self._logic.enable_pulsed_measurement))
+        self.measurement_name_edit.setText(
+            str(self._logic.measurement_ensemble_name))
+        self.laser_pulse_name_edit.setText(
+            str(self._logic.laser_pulse_ensemble_name))
+        self.poi_radius_spinbox.setValue(
+            float(self._logic.poi_non_repetition_radius_m) * 1e6)
 
     def _connect_signals(self):
         # GUI -> Logic
@@ -163,6 +238,25 @@ class MultiScaleAutoNVFinderWidget(QtWidgets.QDockWidget):
         self._logic.sigLogMessage.connect(self._append_log, QtCore.Qt.QueuedConnection)
         self._logic.sigQueueUpdated.connect(self._update_progress, QtCore.Qt.QueuedConnection)
         self._logic.sigVisualUpdate.connect(self._on_visual_update, QtCore.Qt.QueuedConnection)
+        self._logic.sigExperimentProgress.connect(
+            self._update_experiment_progress, QtCore.Qt.QueuedConnection)
+
+        # Experiment loop GUI -> Logic
+        self.target_cells_spinbox.valueChanged.connect(
+            lambda v: setattr(self._logic, 'target_cells', v))
+        self.nvs_per_cell_spinbox.valueChanged.connect(
+            lambda v: setattr(self._logic, 'target_nvs_per_cell', v))
+        self.enable_pulsed_checkbox.toggled.connect(
+            lambda v: setattr(self._logic, 'enable_pulsed_measurement', v))
+        self.measurement_name_edit.textChanged.connect(
+            lambda v: setattr(
+                self._logic, 'measurement_ensemble_name', v))
+        self.laser_pulse_name_edit.textChanged.connect(
+            lambda v: setattr(
+                self._logic, 'laser_pulse_ensemble_name', v))
+        self.poi_radius_spinbox.valueChanged.connect(
+            lambda v: setattr(
+                self._logic, 'poi_non_repetition_radius_m', v * 1e-6))
 
     # --- Slots ---
 
@@ -181,7 +275,7 @@ class MultiScaleAutoNVFinderWidget(QtWidgets.QDockWidget):
 
     @QtCore.Slot(str)
     def _update_state(self, state):
-        self.state_label.setText(f"State: {state.replace('_', ' ').title()}")
+        self.state_label.setText('State: {0}'.format(state.replace('_', ' ').title()))
         if state == 'idle':
             self.start_btn.setEnabled(True)
             self.stop_btn.setEnabled(False)
@@ -200,8 +294,22 @@ class MultiScaleAutoNVFinderWidget(QtWidgets.QDockWidget):
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         self._update_state('idle')
-        self.state_label.setText('State: Complete')
+        self.state_label.setText('State: Complete ({0} cells, {1} NVs)'.format(
+            stats.get('cells_completed', 0),
+            stats.get('total_nvs_measured', 0)))
         self._sync_regions_to_overlay()
+
+    @QtCore.Slot(object)
+    def _update_experiment_progress(self, progress):
+        """Update experiment progress labels from sigExperimentProgress."""
+        self.cells_progress_label.setText('{0} / {1}'.format(
+            progress.get('cells_completed', 0),
+            progress.get('target_cells', 0)))
+        self.nvs_cell_progress_label.setText('{0} / {1}'.format(
+            progress.get('nvs_this_cell', 0),
+            progress.get('target_nvs_per_cell', 0)))
+        self.total_nvs_label.setText(str(
+            progress.get('total_nvs_measured', 0)))
 
     @QtCore.Slot(str)
     def _append_log(self, message):
@@ -211,7 +319,7 @@ class MultiScaleAutoNVFinderWidget(QtWidgets.QDockWidget):
 
     @QtCore.Slot(str, object)
     def _on_visual_update(self, name, array_data):
-        self.visuals_label.setText(f"Visual: {name}")
+        self.visuals_label.setText('Visual: {0}'.format(name))
         # pyqtgraph ImageView expects image array. Adjust shape if needed.
         # numpy arrays might need rotation for correct display in pg (transpose)
         if isinstance(array_data, np.ndarray):

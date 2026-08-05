@@ -18,12 +18,23 @@
 4. **POI Extraction** (`logic/poi_extractor.py`) — **DONE**
    - Runs Confocal Image Processing (CIP) constrained to the Processable Zone.
    - Extracts individual diffraction-limited NV candidates, scores them, and filters them adaptively.
-5. **Candidate Verification** (`logic/nv_candidate_verifier.py`) — **DIAGNOSTIC IMPLEMENTED**
+5. **Candidate Verification** (`logic/nv_candidate_verifier.py`) — **DONE (HYBRID MODE)**
    - Wraps unmodified legacy `OptimizerLogic` for two-to-four correlated refocus attempts.
-   - Does not gate on fit quality or seed displacement until live calibration data has been reviewed.
    - Archives raw legacy optimizer scans and independently re-fits XY data through bounded `Optimizer2D`.
-   - Records signed X/Y and radial seed offsets, sampled bounds, edge flags, fit failures, timeouts, and manifests.
-   - Is deliberately `diagnostic_only=True`: no automatic acceptance/rejection or POI registration until live calibration is reviewed.
+   - Now supports three operating modes: `diagnostic` (data collection only), `hybrid` (gates + registration + full audit), `production` (gates + registration, reduced logging).
+   - In `hybrid` mode, accepted candidates are registered to `PoiManagerLogic` and a `sigCandidateAccepted` signal is emitted for downstream consumers (PulsedMeasurementExecutor).
+   - Backward-compatible: configs using `diagnostic_only: True` are automatically mapped to `operating_mode: 'diagnostic'`.
+6. **Pulsed Measurement Execution** (`logic/pulsed_measurement_executor.py`) — **DONE**
+   - Qt signal-driven state machine that automates T1/ODMR experiment sequences through `PulsedMasterLogic`.
+   - Sequence: pulser off → stop prev measurement → sample+load measurement ensemble → run → wait for completion → save data → pulser off → sample+load laser pulse → pulser on.
+   - 15-minute configurable safety timeout. All transitions use signal correlation (no blocking waits).
+7. **Full Experiment Loop** (`logic/multi_scale_auto_nv_finder_logic.py`) — **DONE**
+   - Complete orchestration: macro scan → ROI segmentation → for each cell: micro scan → cell processing → POI extraction → POI filtering (non-repetition radius) → verification (hybrid mode) → pulsed measurement → drift snapshot → repeat until NVs/cell met (with re-scanning) → next cell.
+   - Tracks per-cell NV targets (default 2-3), total cell targets, drift records, and measurement results.
+   - POI non-repetition filtering removes candidates within 1 µm of previously measured NVs.
+8. **Z-Scan Surface Finding** (`logic/z_surface_finder.py`) — **STUB**
+   - Documented interface for next iteration: full Z scan → find bright surface layer (top 2% = "cream") → compute target depth Z = Z_SL - Z_depth.
+   - `compute_target_depth()` is functional; `find_surface()` raises `NotImplementedError`.
 
 ## 2. Core Intuition & Physics Considerations
 
@@ -49,7 +60,9 @@ Because the Processable Zone has its macro-clusters explicitly removed by the `C
 
 ## 3. Immediate Next Steps
 
-1. Run the live seed-offset/resolution calibration procedure in `21_nv_candidate_verifier.md` and preserve its audit directories.
-2. Review the bounded-fit, edge, offset, and repeatability plots from those audit logs.
-3. Repair or replace the legacy optimizer result contract only after calibration identifies the failure mode.
-4. Add calibrated acceptance/rejection and POI-registration policy only after that review.
+1. Run the full pipeline in `hybrid` mode on a known sample to collect the first combined optical verification + pulsed measurement + drift tracking dataset.
+2. Analyze the `DriftTracker` snapshots from step 1 to quantify typical hardware drift during T1/ODMR measurements (expected 10-30 minutes per NV). This calibration data feeds the future drift compensation module.
+3. Review the `POIVerificationLogger` audit logs alongside pulsed measurement results to correlate optical fit quality with actual NV behavior under T1/ODMR.
+4. Implement `ZSurfaceFinder.find_surface()` using the calibration Z-scan profiles collected in step 1 — identify the bright layer peak (top 2%) and validate depth targeting.
+5. Add ODMR quality gates as a Stage 3 in `NVCandidateVerifier` based on measurement results (dip contrast, linewidth).
+6. Build drift compensation module using the calibration dataset: apply start/end drift subtraction to improve next-NV candidate verification accuracy.
