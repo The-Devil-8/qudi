@@ -242,7 +242,6 @@ class PoiManagerGui(GUIBase):
     # declare connectors
     poimanagerlogic = Connector(interface='PoiManagerLogic')
     scannerlogic = Connector(interface='ConfocalLogic')
-    auto_nv_finder = Connector(interface='AutoNVFinderLogic', optional=True)
     multi_scale_auto_nv_finder = Connector(interface='MultiScaleAutoNVFinderLogic', optional=True)
 
     # declare signals
@@ -270,7 +269,6 @@ class PoiManagerGui(GUIBase):
 
         self.__poi_selector_active = False  # Flag indicating if the poi selector is active
 
-        self._auto_nv_finder_widget = None  # Auto NV Finder dock widget
         self._multi_scale_auto_nv_finder_widget = None # Multi Scale Auto NV Finder dock widget
         return
 
@@ -320,9 +318,6 @@ class PoiManagerGui(GUIBase):
         self.__connect_update_signals_from_logic()
         self.__connect_control_signals_to_logic()
 
-        # Initialize Auto NV Finder dock widget (if logic module is loaded)
-        self.__init_auto_nv_finder_dock()
-        
         # Initialize Multi Scale Auto NV Finder dock widget (if logic module is loaded)
         self.__init_multi_scale_auto_nv_finder_dock()
 
@@ -333,11 +328,6 @@ class PoiManagerGui(GUIBase):
         """
         De-initialisation performed during deactivation of the module.
         """
-        # Clean up Auto NV Finder dock widget
-        if self._auto_nv_finder_widget is not None:
-            self._auto_nv_finder_widget.cleanup()
-            self._auto_nv_finder_widget = None
-            
         if self._multi_scale_auto_nv_finder_widget is not None:
             self._multi_scale_auto_nv_finder_widget.cleanup()
             self._multi_scale_auto_nv_finder_widget = None
@@ -384,45 +374,6 @@ class PoiManagerGui(GUIBase):
         if not self._mw.sample_shift_view_Action.isChecked():
             self._mw.sample_shift_view_Action.trigger()
         return
-
-    def __init_auto_nv_finder_dock(self):
-        """Initialize the Auto NV Finder dock widget.
-
-        Only creates the widget if the AutoNVFinderLogic connector is available.
-        This makes the auto-finder an optional add-on that doesn't break
-        existing POI Manager functionality.
-        """
-        try:
-            if not self.auto_nv_finder.is_connected:
-                self.log.info('AutoNVFinderLogic not connected — '
-                              'Auto NV Finder dock widget will not be created.')
-                return
-        except Exception:
-            self.log.info('AutoNVFinderLogic connector not available — '
-                          'Auto NV Finder dock widget will not be created.')
-            return
-
-        try:
-            from gui.poimanager.auto_nv_finder_widget import AutoNVFinderWidget
-
-            view_widget = self._mw.roi_map_ViewWidget
-            poi_diameter = self.poimanagerlogic().poi_diameter
-
-            self._auto_nv_finder_widget = AutoNVFinderWidget(
-                auto_nv_finder_logic=self.auto_nv_finder(),
-                view_widget=view_widget,
-                poi_diameter=poi_diameter,
-                parent=self._mw
-            )
-
-            self._mw.addDockWidget(
-                QtCore.Qt.BottomDockWidgetArea,
-                self._auto_nv_finder_widget)
-
-            self.log.info('Auto NV Finder dock widget initialized.')
-        except Exception as e:
-            self.log.warning('Failed to initialize Auto NV Finder dock: {0}'.format(e))
-            self._auto_nv_finder_widget = None
 
     def __init_multi_scale_auto_nv_finder_dock(self):
         """Initialize the Multi-Scale Auto NV Finder dock widget.

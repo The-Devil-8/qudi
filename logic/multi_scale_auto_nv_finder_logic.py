@@ -158,6 +158,18 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
     # PUBLIC API
     # =====================================================================
 
+    @staticmethod
+    def _val(val, default):
+        """Helper to safely extract primitive value from StatusVar or descriptor."""
+        if hasattr(val, 'default'):
+            return val.default
+        if val is None:
+            return default
+        try:
+            return type(default)(val)
+        except (TypeError, ValueError):
+            return default
+
     @property
     def state(self):
         """Return the current orchestrator state."""
@@ -178,9 +190,9 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
         """Return a summary dict of the current experiment progress."""
         return {
             'cells_completed': self._cells_completed,
-            'target_cells': int(self.target_cells),
+            'target_cells': int(self._val(self.target_cells, 5)),
             'nvs_this_cell': self._cell_nv_count,
-            'target_nvs_per_cell': int(self.target_nvs_per_cell),
+            'target_nvs_per_cell': int(self._val(self.target_nvs_per_cell, 3)),
             'total_nvs_measured': self._total_nvs_measured,
             'regions_processed': self._stats.get('regions_processed', 0),
             'regions_queued': self._stats.get('regions_queued', 0),
@@ -233,17 +245,21 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
             'xy_resolution': self.confocallogic().xy_resolution,
         }
 
+        target_cells_num = int(self._val(self.target_cells, 5))
+        target_nvs_num = int(self._val(self.target_nvs_per_cell, 3))
+        pulsed_enabled = bool(self._val(self.enable_pulsed_measurement, False))
+
         self._log('Starting full NV automation pipeline. '
                   'Target: {0} cells, {1} NVs/cell, '
                   'pulsed measurement: {2}'.format(
-                      int(self.target_cells),
-                      int(self.target_nvs_per_cell),
-                      'ENABLED' if self.enable_pulsed_measurement else 'disabled'))
+                      target_cells_num,
+                      target_nvs_num,
+                      'ENABLED' if pulsed_enabled else 'disabled'))
 
         # Setup MACRO scan
         center_x = sum(self._original_scan_params['x_range']) / 2.0
         center_y = sum(self._original_scan_params['y_range']) / 2.0
-        fov_m = float(self.coarse_fov_um) * 1e-6
+        fov_m = float(self._val(self.coarse_fov_um, 200.0)) * 1e-6
 
         x_min, x_max = self.confocallogic().x_range
         y_min, y_max = self.confocallogic().y_range
@@ -255,10 +271,10 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
 
         self.confocallogic().image_x_range = [x_start, x_end]
         self.confocallogic().image_y_range = [y_start, y_end]
-        self.confocallogic().xy_resolution = int(self.coarse_resolution)
+        self.confocallogic().xy_resolution = int(self._val(self.coarse_resolution, 200))
 
         self._log('Starting MACRO scan ({0} um FOV)...'.format(
-            self.coarse_fov_um))
+            self._val(self.coarse_fov_um, 200.0)))
         self._set_state('macro_scanning')
 
         self.confocallogic().signal_xy_image_updated.connect(
@@ -321,7 +337,7 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
 
         # 1. Segment ROI
         seg_result = self._roi_segmenter.segment_roi(
-            image, min_cell_area_um2=float(self.min_cell_area_um2))
+            image, min_cell_area_um2=float(self._val(self.min_cell_area_um2, 50.0)))
 
         # 2. Queue regions
         self._queue = ScanRegionQueue()
@@ -348,10 +364,13 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
             self._finish('Stopped by user.')
             return
 
+        target_cells_num = int(self._val(self.target_cells, 5))
+        max_regions_num = int(self._val(self.max_regions_per_run, 10))
+
         # Check if we've met the target number of cells
-        if self._cells_completed >= int(self.target_cells):
+        if self._cells_completed >= target_cells_num:
             self._finish('All target cells ({0}) completed.'.format(
-                int(self.target_cells)))
+                target_cells_num))
             return
 
         if not self._queue.has_queued_regions():
@@ -359,9 +378,9 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
                 self._cells_completed))
             return
 
-        if self._stats['regions_processed'] >= int(self.max_regions_per_run):
+        if self._stats['regions_processed'] >= max_regions_num:
             self._finish('Reached max_regions_per_run limit ({0}).'.format(
-                self.max_regions_per_run))
+                max_regions_num))
             return
 
         region = self._queue.get_next_region()
@@ -383,8 +402,8 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
 
         scan_params = self._queue.compute_scan_parameters(
             self._current_region,
-            margin_fraction=float(self.bbox_margin_fraction),
-            resolution=int(self.micro_resolution),
+            margin_fraction=float(self._val(self.bbox_margin_fraction, 0.15)),
+            resolution=int(self._val(self.micro_resolution, 200)),
             scanner_limits={
                 'x_range': self.confocallogic().x_range,
                 'y_range': self.confocallogic().y_range,
@@ -438,15 +457,6 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
         strong_cands = extraction_result.strong_candidates
         self._stats['total_candidates'] += len(strong_cands)
 
-        self._queue.mark_region_status(
-            self._current_region.region_id, 'processed',
-            nv_candidates_found=len(strong_cands))
-
-        self._stats['regions_processed'] += 1
-        self.sigQueueUpdated.emit(
-            self._stats['regions_processed'],
-            self._queue.queued_count + self._stats['regions_processed'])
-
         # 3. Filter out previously used POIs (non-repetition radius)
         filtered_cands = self._filter_used_pois(strong_cands)
 
@@ -456,7 +466,18 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
         if not filtered_cands:
             self._log('No new candidates in {0}. Moving to next '
                       'region.'.format(self._current_region.region_id))
-            self._on_cell_nv_collection_done()
+            self._queue.mark_region_status(
+                self._current_region.region_id, 'processed',
+                nv_candidates_found=0)
+            self._stats['regions_processed'] += 1
+            self._cells_completed += 1
+            self.sigCellComplete.emit(
+                self._current_region.region_id, self._cell_nv_count)
+            self.sigQueueUpdated.emit(
+                self._stats['regions_processed'],
+                self._queue.queued_count + self._stats['regions_processed'])
+            self._emit_progress()
+            QtCore.QTimer.singleShot(0, self._process_next_region)
             return
 
         # 4. Queue filtered candidates for sequential verification
@@ -491,14 +512,8 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
         """Handle an optically verified candidate from NVCandidateVerifier.
 
         This is called for each individual candidate that passes optical
-        gates.  If pulsed measurement is enabled, we queue it for
-        measurement.  Otherwise we count it directly.
-
-        Parameters
-        ----------
-        accepted_record : dict
-            Contains 'candidate_id', 'accepted_position_m', 'poi_name',
-            'operating_mode', 'region_id', etc.
+        gates. If pulsed measurement is enabled, we queue it for
+        measurement. Otherwise we count it directly.
         """
         if self._stop_requested:
             return
@@ -513,14 +528,16 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
                       position[1] * 1e6 if len(position) > 1 else 0,
                       position[2] * 1e6 if len(position) > 2 else 0))
 
+        target_nvs = int(self._val(self.target_nvs_per_cell, 3))
         # Check if we already have enough NVs for this cell
-        if self._cell_nv_count >= int(self.target_nvs_per_cell):
+        if self._cell_nv_count >= target_nvs:
             self._log('Target NVs/cell already met ({0}). Skipping '
                       'measurement for {1}.'.format(
                           self._cell_nv_count, candidate_id))
             return
 
-        if self.enable_pulsed_measurement:
+        pulsed_enabled = bool(self._val(self.enable_pulsed_measurement, False))
+        if pulsed_enabled:
             self._start_pulsed_measurement(accepted_record)
         else:
             # No pulsed measurement — just count the verified NV
@@ -557,10 +574,13 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
         # Store current candidate for the measurement callback
         self._current_measurement_candidate = accepted_record
 
+        meas_ensemble = str(self._val(self.measurement_ensemble_name, ''))
+        pulse_ensemble = str(self._val(self.laser_pulse_ensemble_name, ''))
+
         executor.execute_measurement(
             candidate_record=accepted_record,
-            measurement_name=str(self.measurement_ensemble_name),
-            laser_pulse_name=str(self.laser_pulse_ensemble_name))
+            measurement_name=meas_ensemble,
+            laser_pulse_name=pulse_ensemble)
 
     def _on_measurement_complete(self, result):
         """Handle completed pulsed measurement."""
@@ -611,32 +631,15 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
                 result.get('error', 'unknown error')))
 
         self._current_measurement_candidate = None
-        # Verification batch may still be running — return to verification
-        # state.  When the batch finishes, _on_verification_batch_complete
-        # will decide next steps.
         if self._state == 'pulsed_measurement':
             self._set_state('verification')
 
     def _on_measurement_error(self, error_msg):
         """Handle pulsed measurement error."""
         self._log('Measurement error: {0}'.format(error_msg))
-        # The sigMeasurementComplete will still fire with success=False,
-        # so we don't need to do anything extra here.
 
     def _register_measured_nv(self, accepted_record, measurement_result):
-        """Register an NV as successfully measured.
-
-        Increments counters, appends to poi_used_list, emits progress
-        signals.
-
-        Parameters
-        ----------
-        accepted_record : dict
-            The accepted candidate record from NVCandidateVerifier.
-        measurement_result : dict or None
-            The result from PulsedMeasurementExecutor, or None if
-            pulsed measurement is disabled.
-        """
+        """Register an NV as successfully measured."""
         position = accepted_record.get('accepted_position_m', [0, 0, 0])
 
         # Append to POI used list for non-repetition filtering
@@ -644,6 +647,8 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
 
         self._cell_nv_count += 1
         self._total_nvs_measured += 1
+
+        target_nvs = int(self._val(self.target_nvs_per_cell, 3))
 
         # Store measurement result
         nv_record = {
@@ -663,24 +668,18 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
                       accepted_record.get('candidate_id', ''),
                       self._cells_completed + 1,
                       self._cell_nv_count,
-                      int(self.target_nvs_per_cell),
+                      target_nvs,
                       self._total_nvs_measured))
 
         self.sigNVMeasured.emit(nv_record)
         self._emit_progress()
 
     # =====================================================================
-    # INTERNAL: Verification batch completion → decide next action
+    # INTERNAL: Verification batch completion → advance to next cell
     # =====================================================================
 
     def _on_verification_batch_complete(self, verification_result):
-        """Handle completion of a verification batch.
-
-        After the batch completes, decide whether to:
-        - Move to next cell (if NVs/cell target met)
-        - Re-scan the current cell ROI (if more NVs needed)
-        - Move to next region (if re-scan budget exhausted)
-        """
+        """Handle completion of a verification batch."""
         verifier = self.nvcandidateverifier()
         try:
             verifier.sigCandidateAccepted.disconnect(
@@ -694,50 +693,29 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
             self._finish('Stopped during verification.')
             return
 
+        target_nvs = int(self._val(self.target_nvs_per_cell, 3))
         self._log('Verification batch complete for {0}. '
                   'NVs measured this cell: {1}/{2}'.format(
                       self._current_region.region_id,
                       self._cell_nv_count,
-                      int(self.target_nvs_per_cell)))
+                      target_nvs))
 
-        self._on_cell_nv_collection_done()
+        # Mark this cell region as completed in the queue and stats
+        self._queue.mark_region_status(
+            self._current_region.region_id, 'processed',
+            nv_candidates_found=self._cell_nv_count)
+        self._stats['regions_processed'] += 1
+        self._cells_completed += 1
 
-    def _on_cell_nv_collection_done(self):
-        """Decide whether this cell is done or needs re-scanning."""
-        # Check if NV target for this cell is met
-        if self._cell_nv_count >= int(self.target_nvs_per_cell):
-            self._log('Cell {0} complete! {1} NVs measured.'.format(
-                self._current_region.region_id, self._cell_nv_count))
-            self._cells_completed += 1
-            self.sigCellComplete.emit(
-                self._current_region.region_id, self._cell_nv_count)
-            self._emit_progress()
-            QtCore.QTimer.singleShot(0, self._process_next_region)
-            return
+        self.sigCellComplete.emit(
+            self._current_region.region_id, self._cell_nv_count)
+        self.sigQueueUpdated.emit(
+            self._stats['regions_processed'],
+            self._queue.queued_count + self._stats['regions_processed'])
+        self._emit_progress()
 
-        # Check if we can re-scan this cell for more NVs
-        if self._cell_rescan_count < int(self.max_rescans_per_cell):
-            self._cell_rescan_count += 1
-            self._log('NV target not met ({0}/{1}). Re-scanning region '
-                      '{2} (rescan {3}/{4})...'.format(
-                          self._cell_nv_count,
-                          int(self.target_nvs_per_cell),
-                          self._current_region.region_id,
-                          self._cell_rescan_count,
-                          int(self.max_rescans_per_cell)))
-            # Re-scan the same region to find more candidates
-            self._start_micro_scan()
-        else:
-            self._log('Re-scan budget exhausted for cell {0}. '
-                      'Measured {1}/{2} NVs. Moving on.'.format(
-                          self._current_region.region_id,
-                          self._cell_nv_count,
-                          int(self.target_nvs_per_cell)))
-            self._cells_completed += 1
-            self.sigCellComplete.emit(
-                self._current_region.region_id, self._cell_nv_count)
-            self._emit_progress()
-            QtCore.QTimer.singleShot(0, self._process_next_region)
+        # Advance to the next region
+        QtCore.QTimer.singleShot(0, self._process_next_region)
 
     # =====================================================================
     # INTERNAL: POI filtering
@@ -746,21 +724,11 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
     def _filter_used_pois(self, candidates):
         """Remove candidates that fall within the non-repetition radius
         of any previously measured POI.
-
-        Parameters
-        ----------
-        candidates : list
-            List of POICandidate objects or dicts with x, y attributes.
-
-        Returns
-        -------
-        list
-            Filtered list of candidates.
         """
         if not self._poi_used_list:
             return list(candidates)
 
-        radius = float(self.poi_non_repetition_radius_m)
+        radius = float(self._val(self.poi_non_repetition_radius_m, 1.0e-6))
         if radius <= 0:
             return list(candidates)
 

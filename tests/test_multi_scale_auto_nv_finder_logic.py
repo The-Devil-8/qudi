@@ -51,10 +51,13 @@ class TestMultiScaleOrchestrator:
         MultiScaleAutoNVFinderLogic.min_cell_area_um2 = 1.0
 
         # Mock confocallogic properties
+        logic_instance.confocallogic().x_range = [-100e-6, 100e-6]
+        logic_instance.confocallogic().y_range = [-100e-6, 100e-6]
         logic_instance.confocallogic().image_x_range = [-50e-6, 50e-6]
         logic_instance.confocallogic().image_y_range = [-50e-6, 50e-6]
         logic_instance.confocallogic().image_x_pixels = 100
         logic_instance.confocallogic().image_y_pixels = 100
+        logic_instance.confocallogic().xy_resolution = 500
         
         # Setup stats and state
         logic_instance._state = 'idle'

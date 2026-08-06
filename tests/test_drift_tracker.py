@@ -20,8 +20,8 @@ def test_drift_record_creation():
     assert record.elapsed_since_last_s == 1.5
 
 def test_record_addition():
-    tracker = DriftTracker()
     with patch("time.monotonic", side_effect=[100.0, 102.5, 106.0]):
+        tracker = DriftTracker()
         # The constructor calls time.monotonic() once, setting _last_time to 100.0
         # First record call: current_time = 102.5, elapsed = 2.5
         tracker.record("pre_measurement", [0.0, 0.0, 0.0], candidate_id="cand_1")

@@ -12,6 +12,7 @@ import sys
 import os
 import pytest
 from unittest.mock import MagicMock
+import numpy as np
 
 import qtpy
 from qtpy import QtWidgets, QtCore, QtGui
@@ -23,49 +24,94 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from multi_scale_auto_nv_finder_widget import MultiScaleAutoNVFinderWidget, RegionMarker
 
+
+class MockMultiScaleLogic(QtCore.QObject):
+    sigStateChanged = QtCore.Signal(str)
+    sigMultiScaleComplete = QtCore.Signal(dict)
+    sigLogMessage = QtCore.Signal(str)
+    sigQueueUpdated = QtCore.Signal(int, int)
+    sigVisualUpdate = QtCore.Signal(str, object)
+    sigExperimentProgress = QtCore.Signal(object)
+
+    def __init__(self):
+        super().__init__()
+        self.coarse_fov_um = 150.0
+        self.bbox_margin_fraction = 0.2
+        self.max_regions_per_run = 10
+        self.target_cells = 5
+        self.target_nvs_per_cell = 3
+        self.enable_pulsed_measurement = False
+        self.measurement_ensemble_name = 'test_meas'
+        self.laser_pulse_ensemble_name = 'test_laser'
+        self.poi_non_repetition_radius_m = 1.0e-6
+
+        self.start_multi_scale_find = MagicMock()
+        self.stop_multi_scale_find = MagicMock()
+
+
 @pytest.fixture
 def mock_logic():
-    logic = MagicMock()
-    logic.coarse_fov_um = 150.0
-    logic.bbox_margin_fraction = 0.2
-    logic.max_regions_per_run = 10
-    logic.sigStateChanged = MagicMock()
-    logic.sigMultiScaleComplete = MagicMock()
-    logic.sigLogMessage = MagicMock()
-    logic.sigQueueUpdated = MagicMock()
-    logic.sigVisualUpdate = MagicMock()
-    return logic
+    return MockMultiScaleLogic()
+
 
 class TestMultiScaleGUI:
 
-    @pytest.fixture
+    @pytest.fixture(scope="class")
     def app(self):
         app = QtWidgets.QApplication.instance()
         if app is None:
             app = QtWidgets.QApplication(sys.argv)
         return app
 
-    @pytest.fixture
-    def widget(self, app, mock_logic):
-        w = MultiScaleAutoNVFinderWidget(mock_logic, view_widget=pg.ViewBox())
+    @pytest.fixture(scope="class")
+    def widget(self, app):
+        logic = MockMultiScaleLogic()
+        w = MultiScaleAutoNVFinderWidget(logic, view_widget=MagicMock())
         yield w
 
-    def test_initialization(self, widget, mock_logic):
-        assert widget._logic == mock_logic
+    def test_initialization(self, widget):
+        assert widget._logic is not None
         assert widget.fov_spinbox.value() == 150.0
         assert widget.margin_spinbox.value() == 0.2
         assert widget.max_regions_spinbox.value() == 10
+        assert widget.target_cells_spinbox.value() == 5
+        assert widget.nvs_per_cell_spinbox.value() == 3
+        assert widget.measurement_name_edit.text() == 'test_meas'
+        assert widget.laser_pulse_name_edit.text() == 'test_laser'
+        assert widget.poi_radius_spinbox.value() == 1.0
 
-    def test_gui_controls_call_logic(self, widget, mock_logic):
+    def test_gui_controls_call_logic(self, widget):
         # Trigger the slots
         widget._on_start_clicked()
-        mock_logic.start_multi_scale_find.assert_called_once()
+        widget._logic.start_multi_scale_find.assert_called_once()
         
         widget._on_stop_clicked()
-        mock_logic.stop_multi_scale_find.assert_called_once()
+        widget._logic.stop_multi_scale_find.assert_called_once()
+
+    def test_experiment_progress_update(self, widget):
+        progress = {
+            'cells_completed': 2,
+            'target_cells': 5,
+            'nvs_this_cell': 1,
+            'target_nvs_per_cell': 3,
+            'total_nvs_measured': 4,
+        }
+        widget._update_experiment_progress(progress)
+        assert widget.cells_progress_label.text() == '2 / 5'
+        assert widget.nvs_cell_progress_label.text() == '1 / 3'
+        assert widget.total_nvs_label.text() == '4'
+
+    def test_log_streaming_and_clearing(self, widget):
+        widget.log_textedit.clear()
+        widget._append_log("Test log entry 1")
+        widget._append_log("Test log entry 2")
+        assert "Test log entry 1" in widget.log_textedit.toPlainText()
+        assert "Test log entry 2" in widget.log_textedit.toPlainText()
+        
+        widget.clear_logs_btn.click()
+        assert widget.log_textedit.toPlainText() == ""
 
     def test_overlay_clears(self, widget):
-        # Mock some region markers
         marker1 = MagicMock()
         marker2 = MagicMock()
         widget._region_markers = {'R1': marker1, 'R2': marker2}
@@ -77,13 +123,17 @@ class TestMultiScaleGUI:
         marker2.remove_from_view.assert_called_once()
 
     def test_visual_update_slot(self, widget):
-        import numpy as np
         fake_array = np.zeros((10, 10))
         widget.image_view.setImage = MagicMock()
         widget.tabs.setCurrentWidget = MagicMock()
-        widget._on_visual_update('TestMask', fake_array)
         
-        # Verify the label updated and the image was set
+        # Default: auto-switch is unchecked, so setCurrentWidget shouldn't be called
+        widget._on_visual_update('TestMask', fake_array)
         assert widget.visuals_label.text() == 'Visual: TestMask'
         widget.image_view.setImage.assert_called()
+        widget.tabs.setCurrentWidget.assert_not_called()
+        
+        # Enable auto-switch
+        widget.auto_switch_visuals_cb.setChecked(True)
+        widget._on_visual_update('TestMask2', fake_array)
         widget.tabs.setCurrentWidget.assert_called_with(widget.visuals_widget)
