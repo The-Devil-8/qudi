@@ -93,7 +93,7 @@ def test_synthetic_cell():
     noise = np.random.RandomState(42).normal(0, 2000, (ny, nx))
     image[:, :, 3] = np.maximum(image[:, :, 3] + noise, 0)
 
-    # Process
+    # Process default (mask_bright_clusters=False)
     proc = CellRegionProcessor()
     result = proc.process(image)
 
@@ -111,23 +111,28 @@ def test_synthetic_cell():
     assert nuc_area > 50, f'Nucleus too small: {nuc_area}'
     print(f'    Nucleus area: {nuc_area} px (expected ~{np.pi * nuc_radius**2:.0f})')
 
-    # Validate bright clusters
+    # Validate bright clusters (detected for diagnostics/stats)
     assert result.bright_cluster_mask.any(), 'Bright clusters should be detected'
     n_clusters = len(result.bright_cluster_stats)
     assert n_clusters >= 2, f'Expected >=2 clusters, got {n_clusters}'
     print(f'    Bright clusters: {n_clusters}')
 
-    # Validate processable zone
+    # Validate processable zone (contains bright NV spots by default)
     assert result.processable_mask.any(), 'Processable zone should exist'
     zone_area = result.processable_mask.sum()
     print(f'    Processable zone: {zone_area} px')
     assert result.zone_stats['processable'], 'Zone should be marked processable'
 
-    # Zone should NOT overlap with nucleus or bright clusters
+    # Zone should NOT overlap with nucleus
     nuc_overlap = (result.processable_mask & result.nucleus_mask).sum()
-    bright_overlap = (result.processable_mask & result.bright_cluster_mask).sum()
     assert nuc_overlap == 0, f'Processable zone overlaps nucleus: {nuc_overlap} px'
-    assert bright_overlap == 0, f'Processable zone overlaps bright clusters: {bright_overlap} px'
+
+    # Test with mask_bright_clusters=True (explicit cluster masking)
+    result_masked = proc.process(image, mask_bright_clusters=True)
+    nuc_overlap_masked = (result_masked.processable_mask & result_masked.nucleus_mask).sum()
+    bright_overlap_masked = (result_masked.processable_mask & result_masked.bright_cluster_mask).sum()
+    assert nuc_overlap_masked == 0, f'Processable zone overlaps nucleus: {nuc_overlap_masked} px'
+    assert bright_overlap_masked == 0, f'Masked zone overlaps bright clusters: {bright_overlap_masked} px'
 
     print('  [PASS] Synthetic cell processing')
 
@@ -231,13 +236,16 @@ def test_close_scan_processing():
         assert result.zone_stats.get('processable'), \
             f'{scan_id}: Should have processable zone'
 
-        # No overlap check
+        # Nucleus exclusion check
         nuc_proc_overlap = (result.processable_mask & result.nucleus_mask).sum()
-        bright_proc_overlap = (result.processable_mask & result.bright_cluster_mask).sum()
         assert nuc_proc_overlap == 0, \
             f'{scan_id}: Processable overlaps nucleus ({nuc_proc_overlap}px)'
-        assert bright_proc_overlap == 0, \
-            f'{scan_id}: Processable overlaps bright ({bright_proc_overlap}px)'
+
+        # Masked mode test
+        res_masked = proc.process(image, mask_bright_clusters=True)
+        bright_masked_overlap = (res_masked.processable_mask & res_masked.bright_cluster_mask).sum()
+        assert bright_masked_overlap == 0, \
+            f'{scan_id}: Masked processable overlaps bright ({bright_masked_overlap}px)'
 
     print('\n  [PASS] All close scans processed')
 

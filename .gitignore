@@ -48,3 +48,6 @@ __pycache__/
 /20260716
 /CalibrationData
 
+#test
+/tests/output_visuals/nv_pipeline_integration
+

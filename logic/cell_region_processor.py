@@ -146,6 +146,7 @@ class CellRegionProcessor:
                 nucleus_min_compactness=0.15,
                 nucleus_centrality=0.70,
                 # Bright cluster detection
+                mask_bright_clusters=False,
                 bright_cluster_sigma=4.0,
                 bright_dilate_px=2,
                 min_bright_cluster_area_px=4,
@@ -192,6 +193,10 @@ class CellRegionProcessor:
 
         Bright cluster detection
         ~~~~~~~~~~~~~~~~~~~~~~~~
+        mask_bright_clusters : bool
+            Whether to subtract detected bright clusters from the processable
+            zone (default False, to preserve single/clustered NV candidate spots
+            for POIExtractor).
         bright_cluster_sigma : float
             MAD-sigma above cell median for bright cluster threshold.
         bright_dilate_px : int
@@ -258,6 +263,7 @@ class CellRegionProcessor:
         processable = self._extract_processable_zone(
             cell_mask, nucleus_mask, bright_mask,
             zone_edge_erosion_px, zone_min_area_px,
+            mask_bright_clusters=mask_bright_clusters,
         )
         result.processable_mask = processable
 
@@ -653,11 +659,12 @@ class CellRegionProcessor:
 
     def _extract_processable_zone(self, cell_mask, nucleus_mask,
                                   bright_mask, edge_erosion_px,
-                                  min_area_px):
+                                  min_area_px, mask_bright_clusters=False):
         """
         Extract the processable cytoplasm zone.
 
-        ``processable = cell_interior AND NOT nucleus AND NOT bright_clusters``
+        ``processable = cell_interior AND NOT nucleus`` (and optionally
+        ``AND NOT bright_clusters`` if ``mask_bright_clusters=True``).
 
         With additional cleanup:
         * Erode cell boundary to avoid edge artefacts.
@@ -679,8 +686,9 @@ class CellRegionProcessor:
         # Subtract nucleus
         zone = zone & ~nucleus_mask
 
-        # Subtract bright clusters
-        zone = zone & ~bright_mask
+        # Subtract bright clusters only if explicitly requested
+        if mask_bright_clusters and bright_mask is not None and bright_mask.any():
+            zone = zone & ~bright_mask
 
         # Morphological cleanup: remove thin strips
         zone = binary_opening(zone, iterations=1)
@@ -746,9 +754,11 @@ class CellRegionProcessor:
         overlay[result.nucleus_mask, 2] = 1.0
         overlay[result.nucleus_mask, 3] = 0.3
 
-        # Bright clusters: red (overrides green if overlap)
-        overlay[result.bright_cluster_mask, 0] = 1.0
-        overlay[result.bright_cluster_mask, 1] = 0.0
-        overlay[result.bright_cluster_mask, 3] = 0.3
+        # Excluded bright clusters: red (only for clusters actually excluded from processable zone)
+        excluded_bright = result.bright_cluster_mask & ~result.processable_mask
+        if excluded_bright.any():
+            overlay[excluded_bright, 0] = 1.0
+            overlay[excluded_bright, 1] = 0.0
+            overlay[excluded_bright, 3] = 0.3
 
         return overlay

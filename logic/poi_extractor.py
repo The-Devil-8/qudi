@@ -374,10 +374,14 @@ class POIExtractor:
 
         # Pixel sizes
         pixel_size_x = (abs(x_coords[-1] - x_coords[0]) / max(nx - 1, 1)
-                        if nx > 1 else cfg['spot_diameter_m'])
+                        if nx > 1 and abs(x_coords[-1] - x_coords[0]) > 0
+                        else cfg['spot_diameter_m'] / 6.0)
         pixel_size_y = (abs(y_coords[-1] - y_coords[0]) / max(ny - 1, 1)
-                        if ny > 1 else cfg['spot_diameter_m'])
+                        if ny > 1 and abs(y_coords[-1] - y_coords[0]) > 0
+                        else cfg['spot_diameter_m'] / 6.0)
         pixel_size = min(pixel_size_x, pixel_size_y)
+        if pixel_size <= 0:
+            pixel_size = cfg['spot_diameter_m'] / 6.0
         pixel_size_um = pixel_size * 1e6
 
         # Spot diameter in pixels

@@ -14,7 +14,31 @@ import os
 
 import matplotlib.pyplot as plt
 import numpy as np
-import pytest
+
+try:
+    import pytest
+except ImportError:
+    class _MockPytest:
+        @staticmethod
+        def mark():
+            pass
+        class mark:
+            @staticmethod
+            def parametrize(*args, **kwargs):
+                def decorator(fn):
+                    return fn
+                return decorator
+        @staticmethod
+        def skip(reason=''):
+            pass
+    pytest = _MockPytest()
+
+import os
+import sys
+
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 from logic.cell_region_processor import CellRegionProcessor
 from logic.cell_segmentation_logic import CellSegmentationLogic
@@ -22,7 +46,6 @@ from logic.optimizer2 import Optimizer2D
 from logic.poi_extractor import POIExtractor
 
 
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 CONFOCAL2_DIR = os.path.join(PROJECT_ROOT, 'Confocal2')
 OUTPUT_DIR = os.path.join(
     PROJECT_ROOT, 'tests', 'output_visuals', 'nv_pipeline_integration')
@@ -282,3 +305,19 @@ def test_close_cell_scan_with_strong_candidates_reaches_optimizer2():
     assert extraction.strong_candidates
     assert any(record['classification'] == 'strong_candidate' for record in records)
     assert any(record['optimizer2_success'] for record in records)
+
+
+if __name__ == '__main__':
+    print("Running NV Pipeline Integration Replay on all close scans...")
+    for s_id in CLOSE_SCANS:
+        print(f"\n--- Testing Scan {s_id} ---")
+        c_res, ext, recs = run_close_scan_pipeline(s_id)
+        strong_count = len(ext.strong_candidates)
+        opt_success = sum(r['optimizer2_success'] for r in recs)
+        print(f"  Processable zone: {c_res.processable_mask.sum()} px")
+        print(f"  POI detected: {ext.stats['total_detected']}, Strong: {strong_count}")
+        print(f"  Optimizer2 attempted: {len(recs)}, Success: {opt_success}")
+        assert c_res.processable_mask.any()
+        assert ext.stats['total_detected'] > 0
+        assert strong_count > 0, f"Expected strong candidates for {s_id}"
+    print("\nAll close scans processed successfully!")
