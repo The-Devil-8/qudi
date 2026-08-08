@@ -387,6 +387,7 @@ class PulsedMeasurementGui(GUIBase):
         self._pa.ana_param_num_laser_pulse_SpinBox.editingFinished.connect(self.measurement_settings_changed)
 
         self._pa.ana_param_record_length_DoubleSpinBox.editingFinished.connect(self.fast_counter_settings_changed)
+        self._pa.ana_param_stop_sweep_SpinBox.editingFinished.connect(self.fast_counter_settings_changed)
         self._pa.ana_param_fc_bins_ComboBox.currentIndexChanged.connect(self.fast_counter_settings_changed)
 
         self._pa.time_param_ana_periode_DoubleSpinBox.editingFinished.connect(self.measurement_timer_changed)
@@ -545,6 +546,7 @@ class PulsedMeasurementGui(GUIBase):
         self._pa.ana_param_num_laser_pulse_SpinBox.editingFinished.disconnect()
 
         self._pa.ana_param_record_length_DoubleSpinBox.editingFinished.disconnect()
+        self._pa.ana_param_stop_sweep_SpinBox.editingFinished.disconnect()
         self._pa.ana_param_fc_bins_ComboBox.currentIndexChanged.disconnect()
 
         self._pa.time_param_ana_periode_DoubleSpinBox.editingFinished.disconnect()
@@ -815,6 +817,7 @@ class PulsedMeasurementGui(GUIBase):
                 self._pa.ana_param_x_axis_inc_ScienDSpinBox.setEnabled(True)
                 self._pa.ana_param_num_laser_pulse_SpinBox.setEnabled(True)
                 self._pa.ana_param_record_length_DoubleSpinBox.setEnabled(True)
+                self._pa.ana_param_stop_sweep_SpinBox.setEnabled(True)
             if self._mw.action_run_stop.isChecked():
                 self._mw.action_run_stop.toggle()
         if is_paused:
@@ -2603,6 +2606,7 @@ class PulsedMeasurementGui(GUIBase):
             return
         settings_dict = dict()
         settings_dict['record_length'] = self._pa.ana_param_record_length_DoubleSpinBox.value()
+        settings_dict['stop_sweep'] = self._pa.ana_param_stop_sweep_SpinBox.value()
         settings_dict['bin_width'] = float(self._pa.ana_param_fc_bins_ComboBox.currentText())
         self.pulsedmasterlogic().set_fast_counter_settings(settings_dict)
         return
@@ -2615,10 +2619,13 @@ class PulsedMeasurementGui(GUIBase):
         """
         # block signals
         self._pa.ana_param_record_length_DoubleSpinBox.blockSignals(True)
+        self._pa.ana_param_stop_sweep_SpinBox.blockSignals(True)
         self._pa.ana_param_fc_bins_ComboBox.blockSignals(True)
         # set widgets
         if 'record_length' in settings_dict:
             self._pa.ana_param_record_length_DoubleSpinBox.setValue(settings_dict['record_length'])
+        if 'stop_sweep' in settings_dict:
+            self._pa.ana_param_stop_sweep_SpinBox.setValue(settings_dict['stop_sweep'])
         if 'bin_width' in settings_dict:
             index = self._pa.ana_param_fc_bins_ComboBox.findText(str(settings_dict['bin_width']))
             self._pa.ana_param_fc_bins_ComboBox.setCurrentIndex(index)
@@ -2631,6 +2638,7 @@ class PulsedMeasurementGui(GUIBase):
 
         # unblock signals
         self._pa.ana_param_record_length_DoubleSpinBox.blockSignals(False)
+        self._pa.ana_param_stop_sweep_SpinBox.blockSignals(False)
         self._pa.ana_param_fc_bins_ComboBox.blockSignals(False)
         return
 
@@ -2796,6 +2804,7 @@ class PulsedMeasurementGui(GUIBase):
             self._pa.ana_param_x_axis_inc_ScienDSpinBox.setEnabled(False)
             self._pa.ana_param_num_laser_pulse_SpinBox.setEnabled(False)
             self._pa.ana_param_record_length_DoubleSpinBox.setEnabled(False)
+            self._pa.ana_param_stop_sweep_SpinBox.setEnabled(False)
             self._pa.ana_param_ignore_first_CheckBox.setEnabled(False)
             self._pa.ana_param_ignore_last_CheckBox.setEnabled(False)
             self._pa.ana_param_alternating_CheckBox.setEnabled(False)
@@ -2804,6 +2813,7 @@ class PulsedMeasurementGui(GUIBase):
             self._pa.ana_param_x_axis_inc_ScienDSpinBox.setEnabled(True)
             self._pa.ana_param_num_laser_pulse_SpinBox.setEnabled(True)
             self._pa.ana_param_record_length_DoubleSpinBox.setEnabled(True)
+            self._pa.ana_param_stop_sweep_SpinBox.setEnabled(True)
             self._pa.ana_param_ignore_first_CheckBox.setEnabled(True)
             self._pa.ana_param_ignore_last_CheckBox.setEnabled(True)
             self._pa.ana_param_alternating_CheckBox.setEnabled(True)

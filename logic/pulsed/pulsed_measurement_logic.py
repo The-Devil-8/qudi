@@ -68,6 +68,7 @@ class PulsedMeasurementLogic(GenericLogic):
     __fast_counter_record_length = StatusVar(default=3.0e-6)
     __fast_counter_binwidth = StatusVar(default=1.0e-9)
     __fast_counter_gates = StatusVar(default=0)
+    __fast_counter_stop_sweep = StatusVar(default=0)
 
     # measurement timer settings
     __timer_interval = StatusVar(default=5)
@@ -126,6 +127,7 @@ class PulsedMeasurementLogic(GenericLogic):
         self.__start_time = 0
         self.__elapsed_time = 0
         self.__elapsed_sweeps = 0
+        self.__stop_requested = False #JSS: stop sweep
 
         # threading
         self._threadlock = Mutex()
@@ -243,6 +245,7 @@ class PulsedMeasurementLogic(GenericLogic):
         settings_dict['bin_width'] = float(self.__fast_counter_binwidth)
         settings_dict['record_length'] = float(self.__fast_counter_record_length)
         settings_dict['number_of_gates'] = int(self.__fast_counter_gates)
+        settings_dict['stop_sweep'] = int(self.__fast_counter_stop_sweep)
         settings_dict['is_gated'] = bool(self.fastcounter().is_gated())
         return settings_dict
 
@@ -290,13 +293,18 @@ class PulsedMeasurementLogic(GenericLogic):
                     self.__fast_counter_gates = int(settings_dict['number_of_gates'])
                 else:
                     self.__fast_counter_gates = 0
+            if 'stop_sweep' in settings_dict:
+                self.__fast_counter_stop_sweep = int(settings_dict['stop_sweep'])
             #print('PML/set_fast_counter_settings/292')
             # Apply the settings to hardware
             self.__fast_counter_binwidth, \
             self.__fast_counter_record_length, \
-            self.__fast_counter_gates = self.fastcounter().configure(self.__fast_counter_binwidth,
-                                                                     self.__fast_counter_record_length,
-                                                                     self.__fast_counter_gates)
+            self.__fast_counter_gates, \
+            self.__fast_counter_stop_sweep = self.fastcounter().configure(
+                                                self.__fast_counter_binwidth,
+                                                self.__fast_counter_record_length,
+                                                self.__fast_counter_gates,
+                                                self.__fast_counter_stop_sweep)
         else:
             self.log.warning('Fast counter is not idle (status: {0}).\n'
                              'Unable to apply new settings.'.format(counter_status))
@@ -758,6 +766,7 @@ class PulsedMeasurementLogic(GenericLogic):
     def start_pulsed_measurement(self, stashed_raw_data_tag=''):
         """Start the analysis loop."""
         self.sigMeasurementStatusUpdated.emit(True, False)
+        self.__stop_requested = False  # JSS: stop sweep
 
         # Check if measurement settings need to be invoked
         if self._invoke_settings_from_sequence:
@@ -1152,6 +1161,20 @@ class PulsedMeasurementLogic(GenericLogic):
             self.sigTimerUpdated.emit(self.__elapsed_time, self.__elapsed_sweeps,
                                       self.__timer_interval)
             self.sigMeasurementDataUpdated.emit()
+
+            #JSS: stop sweep
+            print("stop_sweep", self.__fast_counter_stop_sweep,
+                  "elapsed_sweeps", self.elapsed_sweeps)
+
+            if (self.__fast_counter_stop_sweep > 0
+                    and self.elapsed_sweeps >= self.__fast_counter_stop_sweep - 1
+                    and not self.__stop_requested):
+                self.__stop_requested = True
+
+                print("Automatic stop requested")
+                def delayed_stop():
+                    self.stop_pulsed_measurement()
+                QtCore.QTimer.singleShot(0, delayed_stop)
             return
 
     def _extract_laser_pulses(self):
