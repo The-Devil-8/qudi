@@ -25,7 +25,10 @@ the Free Software Foundation, either version 3 of the License, or
 (at your option) any later version.
 """
 
+import logging
+import traceback
 import time
+import os
 import numpy as np
 from qtpy import QtCore
 
@@ -103,7 +106,7 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
     sigMultiScaleComplete = QtCore.Signal(dict)
     sigLogMessage = QtCore.Signal(str)
     sigQueueUpdated = QtCore.Signal(int, int)       # (processed, total)
-    sigVisualUpdate = QtCore.Signal(str, object)    # (name, numpy_array)
+    sigVisualUpdate = QtCore.Signal(str, object)    # (name, dict_of_data)
     sigNVMeasured = QtCore.Signal(object)           # per-NV result dict
     sigCellComplete = QtCore.Signal(str, int)        # (region_id, nvs_measured)
     sigExperimentProgress = QtCore.Signal(object)   # progress summary dict
@@ -352,6 +355,15 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
             self._queue.queued_count))
         self.sigQueueUpdated.emit(0, self._queue.queued_count)
 
+        # Emit the Macro Scan Queue visualization event
+        vis_data = {
+            'image_data': image[:, :, 3] if image.ndim == 3 else image,
+            'x_coords': x_coords,
+            'y_coords': y_coords,
+            'regions': self._queue.regions
+        }
+        self.sigVisualUpdate.emit('Macro Scan Queue', vis_data)
+
         QtCore.QTimer.singleShot(0, self._process_next_region)
 
     # =====================================================================
@@ -390,6 +402,13 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
         # Reset per-cell counters
         self._cell_nv_count = 0
         self._cell_rescan_count = 0
+
+        # Emit the cropped macro region for visualization
+        if hasattr(region, 'cropped_image') and region.cropped_image is not None:
+            vis_data = {
+                'image_data': region.cropped_image
+            }
+            self.sigVisualUpdate.emit('Macro Crop (Region {0})'.format(region.region_id), vis_data)
 
         self._log('Preparing MICRO scan for region {0} '
                   '({1:.1f}x{2:.1f} um)...'.format(
@@ -445,6 +464,17 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
 
         # 1. Process cell region
         cell_result = self._cell_processor.process(image)
+        
+        # Save the micro scan data
+        try:
+            save_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data', 'micro_scans')
+            os.makedirs(save_dir, exist_ok=True)
+            filename = os.path.join(save_dir, 'region_{0}_{1}.npy'.format(self._current_region.region_id, int(time.time())))
+            np.save(filename, image)
+            self._log('Saved micro scan data for region {0} to {1}'.format(self._current_region.region_id, filename))
+        except Exception as e:
+            self._log('Failed to save micro scan data: {0}'.format(e))
+            
         if hasattr(cell_result, 'processable_mask'):
             self.sigVisualUpdate.emit(
                 'Processable Zone Mask', cell_result.processable_mask)

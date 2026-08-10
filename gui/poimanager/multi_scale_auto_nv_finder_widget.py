@@ -372,8 +372,21 @@ class MultiScaleAutoNVFinderWidget(QtWidgets.QDockWidget):
 
     @QtCore.Slot(str, object)
     def _on_visual_update(self, name, array_data):
+        if name.startswith('Macro Crop') or name.startswith('Macro Scan Queue'):
+            return  # Handled by other dedicated widgets
+            
         self.visuals_label.setText('Visual: {0}'.format(name))
-        if isinstance(array_data, np.ndarray):
+        
+        # Handle new dict format with x/y coords
+        if isinstance(array_data, dict):
+            image = array_data.get('image_data')
+            if image is not None and isinstance(image, np.ndarray):
+                self.image_view.setImage(image.T, autoRange=True, autoLevels=True)
+                if self.auto_switch_visuals_cb.isChecked():
+                    self.tabs.setCurrentWidget(self.visuals_widget)
+                    
+        # Handle legacy numpy array format
+        elif isinstance(array_data, np.ndarray):
             self.image_view.setImage(array_data.T, autoRange=True, autoLevels=True)
             if self.auto_switch_visuals_cb.isChecked():
                 self.tabs.setCurrentWidget(self.visuals_widget)
