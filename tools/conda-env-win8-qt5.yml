@@ -121,3 +121,5 @@ dependencies:
     - smmap2==2.0.1
     - typing==3.6.4
 
+
+  - scikit-image
