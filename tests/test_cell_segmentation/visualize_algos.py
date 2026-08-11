@@ -9,9 +9,9 @@ from matplotlib.colors import ListedColormap
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from logic.roi_segmentation_logic import ROISegmentationLogic
 from tests.test_cell_segmentation.research_algos import (
-    BaselineSegmentation,
     DistanceTransformSegmentation,
-    GradientEnhancedSegmentation
+    GradientEnhancedSegmentation,
+    InpaintingActiveContourSegmentation
 )
 
 def create_random_cmap(n_colors=256):
@@ -35,9 +35,9 @@ def process_and_plot(dat_filepath, output_dir):
     fluor = image[:, :, 3]
     
     algorithms = [
-        BaselineSegmentation(),
         DistanceTransformSegmentation(),
-        GradientEnhancedSegmentation()
+        GradientEnhancedSegmentation(),
+        InpaintingActiveContourSegmentation()
     ]
     
     results = []
