@@ -356,19 +356,19 @@ class ROISegmentationLogic:
 
         raw_mask = smoothed > thresh
 
-        # --- Stage 6: Connected component analysis with size filtering & Watershed ---
-        # Morphological pre-cleanup to connect nearby regions
+        # --- Stage 6: Pre-cleanup & Intensity-Based Watershed ---
+        # Move all morphological cleanup BEFORE watershed so we don't merge them later
         raw_mask = binary_closing(raw_mask, iterations=2)
         raw_mask = binary_fill_holes(raw_mask)
+        raw_mask = binary_opening(raw_mask, iterations=1)
 
         # Apply Watershed to separate overlapping cells
-        from scipy.ndimage import distance_transform_edt
         if HAS_SKIMAGE:
             from skimage.feature import peak_local_max
             from skimage.segmentation import watershed
 
-            # 1. Compute distance transform from the background
-            distance = distance_transform_edt(raw_mask)
+            # USE SMOOTHED INTENSITY INSTEAD OF DISTANCE TRANSFORM
+            intensity = smoothed
             
             # 2. Determine optimal min_distance for peak detection (cell radius proxy)
             if pixel_area_um2 > 0:
@@ -380,14 +380,14 @@ class ROISegmentationLogic:
             # Use half of that to be safe but avoid over-segmentation
             min_dist_px = max(3, int(0.5 * np.sqrt(min_cell_area_px / np.pi)))
             
-            # 3. Find peaks to use as markers
-            coords = peak_local_max(distance, min_distance=min_dist_px, labels=raw_mask)
-            mask_coords = np.zeros(distance.shape, dtype=bool)
+            # 3. Find peaks to use as markers based on Smoothed Intensity
+            coords = peak_local_max(intensity, min_distance=min_dist_px, labels=raw_mask)
+            mask_coords = np.zeros(intensity.shape, dtype=bool)
             mask_coords[tuple(coords.T)] = True
             markers, _ = label(mask_coords)
             
-            # 4. Apply watershed
-            labeled_all = watershed(-distance, markers, mask=raw_mask)
+            # 4. Apply watershed using inverted smoothed intensity
+            labeled_all = watershed(-intensity, markers, mask=raw_mask)
             n_components = np.max(labeled_all) if labeled_all.size > 0 else 0
         else:
             # Fallback if skimage is missing
@@ -424,11 +424,6 @@ class ROISegmentationLogic:
         # Build diffuse mask
         diffuse_mask = np.isin(labeled_all, list(accepted_labels))
 
-        # --- Stage 7: Morphological cleanup of diffuse mask ---
-        diffuse_mask = binary_closing(diffuse_mask, iterations=2)
-        diffuse_mask = binary_fill_holes(diffuse_mask)
-        diffuse_mask = binary_opening(diffuse_mask, iterations=1)
-
         # --- Stage 8: Bright spot (Cell) detection within diffuse regions ---
         # (We keep this for downstream use, but it is NOT the primary cell mask)
         raw_bright_spots = np.zeros((ny, nx), dtype=bool)
@@ -452,8 +447,13 @@ class ROISegmentationLogic:
                 raw_bright_spots = raw_bright_spots & diffuse_mask
 
         # --- Stage 9: Final Assembly ---
-        # The true "cell" is the diffuse mask. We re-label it to get final components.
-        final_labeled, n_final = label(diffuse_mask)
+        # The true "cell" is the diffuse mask. 
+        # We retain the integer labels from the watershed to keep overlapping cells separate!
+        
+        # Build the final labeled map, maintaining watershed separations
+        final_labeled = np.where(diffuse_mask, labeled_all, 0)
+        
+        # We re-compute properties on the final separated labels
         final_props = self.compute_component_properties(final_labeled, fluor)
         
         # We can re-apply size filters just in case morph ops merged things

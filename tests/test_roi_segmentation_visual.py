@@ -30,6 +30,9 @@ def test_segmentation_on_dataset(dataset_dir, output_prefix):
     fluor = image[:, :, 3]
     labels = result['component_labels']
     
+    # Convert to kc/s for the plot to match user's actual image
+    fluor_kcs = fluor / 1000.0
+    
     # Calculate physical extents in micrometers
     x_min_um = np.min(ux) * 1e6
     x_max_um = np.max(ux) * 1e6
@@ -39,11 +42,13 @@ def test_segmentation_on_dataset(dataset_dir, output_prefix):
     
     fig, ax = plt.subplots(1, 1, figsize=(10, 10))
     
-    # Clip the image to 99th percentile to avoid NV clusters washing out the contrast
-    vmax = np.percentile(fluor, 99.5)
-    # Use 'inferno' or 'magma' which is standard for confocal fluorescence
-    im = ax.imshow(fluor, cmap='inferno', origin='lower', extent=extent, vmax=vmax)
-    plt.colorbar(im, ax=ax, label='Fluorescence (counts)')
+    # Clip the image to a lower percentile (e.g. 97th) to wash out extreme NV spikes
+    # and reveal the dimmer cell background, mimicking the user's 0-600 kc/s scale.
+    vmax = np.percentile(fluor_kcs, 98)
+    
+    # The 'plasma' or 'magma' colormap matches the user's uploaded image style
+    im = ax.imshow(fluor_kcs, cmap='magma', origin='lower', extent=extent, vmax=vmax)
+    plt.colorbar(im, ax=ax, label='Fluorescence (kc/s)')
     
     # Get bounding boxes using find_objects
     slices = find_objects(labels)
