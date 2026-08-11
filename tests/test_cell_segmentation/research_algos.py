@@ -31,9 +31,13 @@ class DistanceTransformSegmentation(ROISegmentationLogic):
         fluor = image[:, :, 3].astype(float)
         ny, nx = fluor.shape
         
-        # 1. Normalization: Remove extreme bright NV spots by clipping to 95th percentile
-        p95 = np.percentile(fluor, 95)
-        normalized = np.clip(fluor, a_min=None, a_max=p95)
+        from scipy.ndimage import grey_opening
+        
+        # 1. Normalization: Completely remove bright NV spots and clusters.
+        # We use a morphological grey opening. Since NV spots and clusters are 
+        # small high-intensity spikes, a window larger than the spots (e.g., 9x9) 
+        # will replace them entirely with the local cell background intensity.
+        normalized = grey_opening(fluor, size=(9, 9))
         
         # Background subtraction
         bg_kernel = kwargs.get('background_kernel', 51)
@@ -113,19 +117,19 @@ class GradientEnhancedSegmentation(ROISegmentationLogic):
         fluor = image[:, :, 3].astype(float)
         ny, nx = fluor.shape
         
-        # 1. Normalization: Remove extreme bright NV spots
-        p95 = np.percentile(fluor, 95)
-        normalized = np.clip(fluor, a_min=None, a_max=p95)
+        from scipy.ndimage import grey_opening
+        
+        # 1. Normalization: Completely remove bright NV spots and clusters.
+        normalized = grey_opening(fluor, size=(9, 9))
         
         # Background subtraction
         bg_kernel = kwargs.get('background_kernel', 51)
         background = median_filter(normalized, size=bg_kernel)
         corrected = np.maximum(normalized - background, 0.0)
         
-        # Despike and VERY strong smooth for gradient calculation
+        # Despike and smooth for gradient calculation
         despiked = median_filter(corrected, size=kwargs.get('despike_kernel', 7))
-        # Use slightly stronger sigma to prevent noise edges
-        smooth_sigma = kwargs.get('smooth_sigma', 6.0) * 1.5 
+        smooth_sigma = kwargs.get('smooth_sigma', 6.0)
         smoothed = gaussian_filter(despiked, sigma=smooth_sigma)
         
         # Edge Map Generation
