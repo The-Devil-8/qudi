@@ -45,7 +45,7 @@ class FastCounterDummy(Base, FastCounterInterface):
     # config option
     _gated = ConfigOption('gated', False, missing='warn')
     trace_path = ConfigOption('load_trace', None)
-
+    _contrast_based = False
     def __init__(self, config, **kwargs):
         super().__init__(config=config, **kwargs)
 
@@ -117,7 +117,7 @@ class FastCounterDummy(Base, FastCounterInterface):
 
         return constraints
 
-    def configure(self, bin_width_s, record_length_s, number_of_gates = 0):
+    def configure(self, bin_width_s, record_length_s, number_of_gates=0, stop_sweep=0): #JSS: the stop sweep is redundant here, yet lets keep it JIC!
         """ Configuration of the fast counter.
 
         @param float bin_width_s: Length of a single time bin in the time trace
@@ -126,19 +126,22 @@ class FastCounterDummy(Base, FastCounterInterface):
                                       gate in seconds.
         @param int number_of_gates: optional, number of gates in the pulse
                                     sequence. Ignore for not gated counter.
+        @param int stop_sweep: optional, number of sweeps after which to stop measurement.
+                               0 means run indefinitely (default behaviour).
 
-        @return tuple(binwidth_s, gate_length_s, number_of_gates):
+        @return tuple(binwidth_s, gate_length_s, number_of_gates, stop_sweep):
                     binwidth_s: float the actual set binwidth in seconds
                     gate_length_s: the actual set gate length in seconds
                     number_of_gates: the number of gated, which are accepted
+                    stop_sweep: int the actual set stop_sweep value
         """
-        self.numberofsweeps=0
+        self.numberofsweeps = 0
         self._binwidth = int(np.rint(bin_width_s * 1e9 * 950 / 1000))
         self._gate_length_bins = int(np.rint(record_length_s / bin_width_s))
         actual_binwidth = self._binwidth * 1000 / 950e9
         actual_length = self._gate_length_bins * actual_binwidth
         self.statusvar = 1
-        return actual_binwidth, actual_length, number_of_gates
+        return actual_binwidth, actual_length, number_of_gates, stop_sweep
 
 
     def get_status(self):
@@ -154,14 +157,11 @@ class FastCounterDummy(Base, FastCounterInterface):
         return self.statusvar
 
     def start_measure(self):
-        #time.sleep(10)
+        time.sleep(1)
         self.statusvar = 2
+        self.numberofsweeps = 0
         try:
-            try:
-                self._count_data = np.loadtxt(self.trace_path, dtype='int64')+self._count_data
-                print('h2i')
-            except:
-                self._count_data = np.loadtxt(self.trace_path, dtype='int64')
+            self._count_data = np.loadtxt(self.trace_path, dtype='int64')
         except:
             return -1
 
@@ -174,14 +174,14 @@ class FastCounterDummy(Base, FastCounterInterface):
 
         Fast counter must be initially in the run state to make it pause.
         """
-        #time.sleep(1)
+        time.sleep(1)
         self.statusvar = 3
         return 0
 
     def stop_measure(self):
         """ Stop the fast counter. """
-
-        #time.sleep(1)
+        self.numberofsweeps = 0
+        time.sleep(1)
         self.statusvar = 1
         return 0
 
@@ -229,16 +229,13 @@ class FastCounterDummy(Base, FastCounterInterface):
 
         If the hardware does not support these features, the values should be None
         """
-
+        self.numberofsweeps = self.numberofsweeps + 1
         # include an artificial waiting time
-        #time.sleep(0.5)
+        time.sleep(0.5)
         info_dict = {'elapsed_sweeps': self.numberofsweeps, 'elapsed_time': None}
-        if self.numberofsweeps < 100:
-            self.numberofsweeps = self.numberofsweeps + 1
-            self.start_measure()
         return self._count_data, info_dict
 
     def get_frequency(self):
         freq = 950.
-        #time.sleep(0.5)
+        time.sleep(0.5)
         return freq
