@@ -149,7 +149,7 @@ def _write_scan_outputs(scan_id, image, x_coords, y_coords, cell_result,
     axes[1].set_title('Cell mask: green; nucleus: blue; clusters: red')
 
     axes[2].imshow(np.log10(np.maximum(counts, 1.0)), origin='lower',
-                   extent=extent, cmap='gray', aspect='auto')
+                   extent=extent, cmap='inferno', aspect='auto')
     processable = np.ma.masked_where(~cell_result.processable_mask,
                                      cell_result.processable_mask)
     axes[2].imshow(processable, origin='lower', extent=extent, cmap='Greens',

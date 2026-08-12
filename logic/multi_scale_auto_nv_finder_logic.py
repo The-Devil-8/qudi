@@ -212,14 +212,25 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
             return
         self._log('Stop requested. Finishing current step...')
         self._stop_requested = True
+
+        # Stop confocal scanning if active
         if self._state in ('macro_scanning', 'micro_scanning'):
             self.confocallogic().stop_scanning()
-        elif self._state == 'verification':
+
+        # Always stop the verifier — it may still have a running batch
+        # even when state has moved to 'pulsed_measurement'
+        try:
             self.nvcandidateverifier().stop_verification()
-        elif self._state == 'pulsed_measurement':
-            executor = self._get_executor()
-            if executor is not None:
+        except Exception:
+            pass
+
+        # Always stop the pulsed measurement executor
+        executor = self._get_executor()
+        if executor is not None:
+            try:
                 executor.stop_measurement()
+            except Exception:
+                pass
 
     def start_multi_scale_find(self):
         """Begin the full automated NV detection and measurement pipeline."""
@@ -326,6 +337,8 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
         self._on_macro_scan_complete()
 
     def _on_macro_scan_complete(self):
+        if self._state == 'idle':
+            return
         if self._stop_requested:
             self._finish('Stopped during macro scan.')
             return
@@ -372,6 +385,8 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
 
     def _process_next_region(self):
         """Advance to the next queued region (cell)."""
+        if self._state == 'idle':
+            return
         if self._stop_requested:
             self._finish('Stopped by user.')
             return
@@ -449,6 +464,8 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
         self._on_micro_scan_complete()
 
     def _on_micro_scan_complete(self):
+        if self._state == 'idle':
+            return
         if self._stop_requested:
             self._finish('Stopped during micro scan.')
             return
@@ -545,6 +562,8 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
         gates. If pulsed measurement is enabled, we queue it for
         measurement. Otherwise we count it directly.
         """
+        if self._state == 'idle':
+            return
         if self._stop_requested:
             return
 
@@ -614,6 +633,9 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
 
     def _on_measurement_complete(self, result):
         """Handle completed pulsed measurement."""
+        if self._state == 'idle':
+            return
+
         executor = self._get_executor()
         if executor is not None:
             try:
@@ -710,6 +732,9 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
 
     def _on_verification_batch_complete(self, verification_result):
         """Handle completion of a verification batch."""
+        if self._state == 'idle':
+            return
+
         verifier = self.nvcandidateverifier()
         try:
             verifier.sigCandidateAccepted.disconnect(

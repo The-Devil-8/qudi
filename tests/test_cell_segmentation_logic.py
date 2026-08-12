@@ -204,7 +204,7 @@ class TestCellSegmentationLogicRealData:
                 axes[0].set_title(f"Raw Scan ({ds_name})\n{filename}", fontsize=9, fontweight='bold')
                 axes[0].axis('off')
                 
-                axes[1].imshow(fluor, cmap='gray', vmin=p2, vmax=p98)
+                axes[1].imshow(fluor, cmap='inferno', vmin=p2, vmax=p98)
                 for cnt in contours:
                     axes[1].plot(cnt[:, 1], cnt[:, 0], color='cyan', linewidth=1.5)
                 axes[1].set_title(f"Cell Mask Boundaries ({pct_area:.1f}% Area)", fontsize=9, fontweight='bold')

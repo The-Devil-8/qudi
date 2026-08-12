@@ -139,6 +139,15 @@ class PulsedMeasurementExecutor(GenericLogic):
 
     def _transition_to(self, state):
         """Drives the state machine transitions."""
+        # Guard: drop stale deferred transitions that arrive after
+        # the measurement was stopped or finished.  _run_id is set to
+        # None in _finish_measurement(), so any queued lambda from
+        # _deferred_transition() that fires afterwards is harmless.
+        if self._run_id is None and state != 'IDLE':
+            self.log.debug(
+                'Ignoring stale transition to {0} — no active run.'.format(state))
+            return
+
         self._current_state = state
         self.sigMeasurementProgress.emit(state, "Transitioning")
         

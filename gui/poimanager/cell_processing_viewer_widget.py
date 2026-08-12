@@ -7,6 +7,8 @@ import numpy as np
 import pyqtgraph as pg
 from qtpy import QtCore, QtWidgets, QtGui
 
+from gui.colordefs import ColorScaleInferno
+
 class ROIBox(pg.RectROI):
     """Simple non-interactive bounding box for the queue."""
     def __init__(self, pos, size, region_id, **kwargs):
@@ -42,6 +44,10 @@ class MacroQueueWindow(QtWidgets.QDialog):
         # Color bar with contrast control (HistogramLUTItem)
         self.lut = pg.HistogramLUTItem()
         self.lut.setImageItem(self.image_item)
+        
+        # Apply Inferno colormap to match main confocal GUI
+        inferno = ColorScaleInferno()
+        self.image_item.setLookupTable(inferno.lut)
         
         # Add the LUT to the layout
         self.gl_widget.addItem(self.lut)
@@ -103,6 +109,10 @@ class CellProcessingViewerWidget(QtWidgets.QDockWidget):
         self.lut = pg.HistogramLUTItem()
         self.lut.setImageItem(self.image_item)
         self.gl_widget.addItem(self.lut)
+        
+        # Apply Inferno colormap to match main confocal GUI
+        inferno = ColorScaleInferno()
+        self.image_item.setLookupTable(inferno.lut)
         
     @QtCore.Slot(str, object, object, object)
     def update_view(self, title, image_data, x_coords, y_coords):

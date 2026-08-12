@@ -56,7 +56,7 @@ def process_and_plot(dat_filepath, output_dir):
     # Original Image (clipped for visibility without log distortion)
     ax = axes[0]
     p98 = np.percentile(fluor, 98)
-    ax.imshow(np.clip(fluor, 0, p98), cmap='gray')
+    ax.imshow(np.clip(fluor, 0, p98), cmap='inferno')
     ax.set_title("Original Image")
     ax.axis('off')
     

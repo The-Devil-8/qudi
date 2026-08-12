@@ -17,15 +17,17 @@ import pyqtgraph as pg
 from qtpy import QtCore, QtWidgets, QtGui
 import time
 
+from gui.colordefs import ColorScaleInferno
+
 
 class RegionMarker(pg.RectROI):
     """Marker for a queued or processed scan region on the macro image."""
     
     STATUS_PENS = {
-        'queued': {'color': 'FF0', 'width': 2},      # Yellow
-        'scanning': {'color': '00F', 'width': 3},    # Blue
-        'processed': {'color': '0F0', 'width': 2},   # Green
-        'skipped': {'color': '888', 'width': 1},     # Gray
+        'queued': {'color': '#FFFF00', 'width': 2},      # Yellow
+        'scanning': {'color': '#0000FF', 'width': 3},    # Blue
+        'processed': {'color': '#00FF00', 'width': 2},   # Green
+        'skipped': {'color': '#888888', 'width': 1},     # Gray
     }
 
     def __init__(self, region_id, pos, size, status='queued', view_widget=None, **kwargs):
@@ -186,6 +188,9 @@ class MultiScaleAutoNVFinderWidget(QtWidgets.QDockWidget):
         self.image_view = pg.ImageView()
         self.image_view.ui.roiBtn.hide()
         self.image_view.ui.menuBtn.hide()
+        self.image_view.getView().invertY(False)
+        self._inferno_colors = ColorScaleInferno()
+        self.image_view.setColorMap(self._inferno_colors.colormap)
         self.visuals_layout.addWidget(self.image_view)
         self.tabs.addTab(self.visuals_widget, "Intermediate Visuals")
 

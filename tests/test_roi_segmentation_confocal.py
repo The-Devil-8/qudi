@@ -111,12 +111,12 @@ def generate_verification_plot(filename, ux, uy, fluor, diffuse_mask, raw_bright
     fig.colorbar(im0, ax=axes[0])
     
     # Panel 2: Diffuse Region Mask
-    im1 = axes[1].imshow(fluor, extent=extent, origin='lower', cmap='gray', vmin=vmin, vmax=vmax, alpha=0.5)
+    im1 = axes[1].imshow(fluor, extent=extent, origin='lower', cmap='inferno', vmin=vmin, vmax=vmax, alpha=0.5)
     axes[1].imshow(diffuse_mask, extent=extent, origin='lower', cmap='Blues', alpha=0.5)
     axes[1].set_title("Diffuse Region Mask (Bounding areas)")
     
     # Panel 3: Raw Bright Spots
-    im2 = axes[2].imshow(fluor, extent=extent, origin='lower', cmap='gray', vmin=vmin, vmax=vmax, alpha=0.5)
+    im2 = axes[2].imshow(fluor, extent=extent, origin='lower', cmap='inferno', vmin=vmin, vmax=vmax, alpha=0.5)
     bright_overlay = np.ma.masked_where(~raw_bright_spots, np.ones_like(raw_bright_spots))
     axes[2].imshow(bright_overlay, extent=extent, origin='lower', cmap='Reds', vmin=0, vmax=1, alpha=0.7)
     axes[2].set_title("Cell Mask (Bright NV Clusters)")
