@@ -24,7 +24,7 @@ Design notes
 * All physical units are metres (consistent with Qudi).
 * Pixel coordinates use NumPy ``(row, col)`` convention.
 * The module is designed to work with variable-dimension close scans
-  (e.g. 153×200, 159×200) produced by the scanner's natural behaviour.
+  (e.g. 30×40, 40×25) produced by the scanner's natural behaviour.
 * Intensity thresholds are MAD-based (median absolute deviation) for
   robustness against the heavy-tailed fluorescence distribution.
 """
