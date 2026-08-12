@@ -220,6 +220,7 @@ class PulserDummy(Base, PulserInterface):
         activation_config['config8'] = frozenset({'a_ch3'})
         # Usage of only the analog channels:
         activation_config['config9'] = frozenset({'a_ch2', 'a_ch3'})
+        activation_config['config10'] = frozenset({'d_ch1', 'd_ch2', 'd_ch3', 'd_ch4'})
         constraints.activation_config = activation_config
 
         constraints.sequence_option = SequenceOption.FORCED if self.force_sequence_option else SequenceOption.OPTIONAL
