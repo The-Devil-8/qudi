@@ -392,6 +392,7 @@ class PoiManagerGui(GUIBase):
 
         try:
             from gui.poimanager.multi_scale_auto_nv_finder_widget import MultiScaleAutoNVFinderWidget
+            from gui.poimanager.cell_processing_viewer_widget import CellProcessingViewerWidget, MacroQueueWindow
 
             view_widget = self._mw.roi_map_ViewWidget
 
@@ -400,15 +401,49 @@ class PoiManagerGui(GUIBase):
                 view_widget=view_widget,
                 parent=self._mw
             )
+            
+            self._cell_processing_viewer_widget = CellProcessingViewerWidget(parent=self._mw)
 
             self._mw.addDockWidget(
                 QtCore.Qt.BottomDockWidgetArea,
                 self._multi_scale_auto_nv_finder_widget)
+                
+            self._mw.addDockWidget(
+                QtCore.Qt.BottomDockWidgetArea,
+                self._cell_processing_viewer_widget)
 
             self.log.info('Multi-Scale Auto NV Finder dock widget initialized.')
+            
+            # Connect the signal for the popups and the cell viewer
+            self.multi_scale_auto_nv_finder().sigVisualUpdate.connect(self._on_multi_scale_visual_update)
+            
         except Exception as e:
             self.log.warning('Failed to initialize Multi-Scale Auto NV Finder dock: {0}'.format(e))
             self._multi_scale_auto_nv_finder_widget = None
+            self._cell_processing_viewer_widget = None
+
+    def _on_multi_scale_visual_update(self, name, array_data):
+        from gui.poimanager.cell_processing_viewer_widget import MacroQueueWindow
+        if name == 'Macro Scan Queue' and isinstance(array_data, dict):
+            self._macro_queue_window = MacroQueueWindow(
+                image_data=array_data.get('image_data'),
+                x_coords=array_data.get('x_coords'),
+                y_coords=array_data.get('y_coords'),
+                regions=array_data.get('regions', []),
+                parent=self._mw
+            )
+            self._macro_queue_window.show()
+        elif name.startswith('Macro Crop'):
+            if hasattr(self, '_cell_processing_viewer_widget') and self._cell_processing_viewer_widget:
+                if isinstance(array_data, dict):
+                    self._cell_processing_viewer_widget.update_view(
+                        name, 
+                        array_data.get('image_data'),
+                        array_data.get('x_coords'),
+                        array_data.get('y_coords')
+                    )
+                else:
+                    self._cell_processing_viewer_widget.update_view(name, array_data, None, None)
 
     def __init_roi_scan_image(self):
         # Get the color scheme

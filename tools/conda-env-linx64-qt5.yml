@@ -125,3 +125,5 @@ dependencies:
     - serial==0.0.64
     - smmap2==2.0.1
 
+
+  - scikit-image

@@ -159,6 +159,29 @@ class ROISegmentationLogic:
             'centroid_row', 'centroid_col'.
         """
         props = []
+        if HAS_SKIMAGE:
+            from skimage.measure import regionprops
+            regions = regionprops(labeled, intensity_image=fluor)
+            for r in regions:
+                area = r.area
+                if area == 0:
+                    continue
+                perimeter = r.perimeter
+                if perimeter == 0:
+                    perimeter = 1.0
+                compactness = (4.0 * np.pi * area) / (perimeter ** 2)
+                props.append({
+                    'label': r.label,
+                    'area': area,
+                    'perimeter': perimeter,
+                    'compactness': compactness,
+                    'solidity': r.solidity,
+                    'mean_intensity': r.intensity_mean,
+                    'centroid_row': r.centroid[0],
+                    'centroid_col': r.centroid[1],
+                })
+            return props
+            
         slices = find_objects(labeled)
         for idx, sl in enumerate(slices):
             if sl is None:
@@ -169,11 +192,8 @@ class ROISegmentationLogic:
             if area == 0:
                 continue
 
-            # Perimeter: count boundary pixels (pixels with at least one
-            # 4-connected neighbour outside the component).
             padded = np.pad(component.astype(np.uint8), 1, mode='constant',
                             constant_values=0)
-            # Shift in 4 directions
             eroded = (
                 padded[1:-1, 1:-1]
                 & padded[:-2, 1:-1]   # up
@@ -183,7 +203,7 @@ class ROISegmentationLogic:
             )
             perimeter = int(component.sum() - eroded.sum())
             if perimeter <= 0:
-                perimeter = 1  # single-pixel component
+                perimeter = 1
 
             compactness = (4.0 * np.pi * area) / (perimeter ** 2)
 
@@ -199,6 +219,7 @@ class ROISegmentationLogic:
                 'area': area,
                 'perimeter': perimeter,
                 'compactness': compactness,
+                'solidity': 1.0, # Dummy fallback
                 'mean_intensity': mean_intensity,
                 'centroid_row': centroid_row,
                 'centroid_col': centroid_col,
@@ -301,12 +322,15 @@ class ROISegmentationLogic:
 
         # --- Stage 5: Adaptive thresholding for diffuse regions ---
         # We find the diffuse regions to use as bounding boxes for the true cells.
-        # computation to avoid biasing Otsu.
         nonzero_vals = smoothed[smoothed > 0]
         if len(nonzero_vals) > 10:
             if HAS_SKIMAGE:
                 try:
-                    thresh = threshold_otsu(nonzero_vals)
+                    # Clip to 99th percentile to remove extreme NV spikes before Otsu
+                    # This prevents the threshold from being dragged too high by outliers.
+                    p99 = np.percentile(nonzero_vals, 99)
+                    clipped_vals = np.clip(nonzero_vals, a_min=None, a_max=p99)
+                    thresh = threshold_otsu(clipped_vals)
                 except Exception:
                     thresh = np.percentile(nonzero_vals, 65)
             else:
@@ -332,12 +356,43 @@ class ROISegmentationLogic:
 
         raw_mask = smoothed > thresh
 
-        # --- Stage 6: Connected component analysis with size filtering ---
-        # Morphological pre-cleanup to connect nearby regions
+        # --- Stage 6: Pre-cleanup & Intensity-Based Watershed ---
+        # Move all morphological cleanup BEFORE watershed so we don't merge them later
         raw_mask = binary_closing(raw_mask, iterations=2)
         raw_mask = binary_fill_holes(raw_mask)
+        raw_mask = binary_opening(raw_mask, iterations=1)
 
-        labeled_all, n_components = label(raw_mask)
+        # Apply Watershed to separate overlapping cells
+        if HAS_SKIMAGE:
+            from skimage.feature import peak_local_max
+            from skimage.segmentation import watershed
+
+            # USE SMOOTHED INTENSITY INSTEAD OF DISTANCE TRANSFORM
+            intensity = smoothed
+            
+            # 2. Determine optimal min_distance for peak detection (cell radius proxy)
+            if pixel_area_um2 > 0:
+                min_cell_area_px = max(1, int(min_cell_area_um2 / pixel_area_um2))
+            else:
+                min_cell_area_px = 50
+                
+            # Assume cells are somewhat circular; radius = sqrt(Area/pi)
+            # Use half of that to be safe but avoid over-segmentation
+            min_dist_px = max(3, int(0.5 * np.sqrt(min_cell_area_px / np.pi)))
+            
+            # 3. Find peaks to use as markers based on Smoothed Intensity
+            coords = peak_local_max(intensity, min_distance=min_dist_px, labels=raw_mask)
+            mask_coords = np.zeros(intensity.shape, dtype=bool)
+            mask_coords[tuple(coords.T)] = True
+            markers, _ = label(mask_coords)
+            
+            # 4. Apply watershed using inverted smoothed intensity
+            labeled_all = watershed(-intensity, markers, mask=raw_mask)
+            n_components = np.max(labeled_all) if labeled_all.size > 0 else 0
+        else:
+            # Fallback if skimage is missing
+            labeled_all, n_components = label(raw_mask)
+
         component_props = self.compute_component_properties(labeled_all, fluor)
 
         # Convert min_cell_area from µm² to pixels
@@ -369,12 +424,8 @@ class ROISegmentationLogic:
         # Build diffuse mask
         diffuse_mask = np.isin(labeled_all, list(accepted_labels))
 
-        # --- Stage 7: Morphological cleanup of diffuse mask ---
-        diffuse_mask = binary_closing(diffuse_mask, iterations=2)
-        diffuse_mask = binary_fill_holes(diffuse_mask)
-        diffuse_mask = binary_opening(diffuse_mask, iterations=1)
-
         # --- Stage 8: Bright spot (Cell) detection within diffuse regions ---
+        # (We keep this for downstream use, but it is NOT the primary cell mask)
         raw_bright_spots = np.zeros((ny, nx), dtype=bool)
         if diffuse_mask.any():
             cell_intensities = fluor[diffuse_mask]
@@ -387,35 +438,37 @@ class ROISegmentationLogic:
             bright_thresh = med_cell + bright_spot_sigma * sigma_cell
             raw_bright_spots = (fluor > bright_thresh) & diffuse_mask
 
-            # Dilate bright spots to catch the full bright cell candidate.
             if bright_spot_dilate > 0 and raw_bright_spots.any():
                 struct_b = np.ones(
                     (2 * bright_spot_dilate + 1, 2 * bright_spot_dilate + 1),
                     dtype=bool)
                 raw_bright_spots = binary_dilation(raw_bright_spots,
                                                    structure=struct_b)
-                # Keep only within diffuse mask
                 raw_bright_spots = raw_bright_spots & diffuse_mask
 
-        # --- Stage 9: Size & Shape filtering on the true cells (bright spots) ---
-        labeled_cells, n_cells = label(raw_bright_spots)
-        cell_props = self.compute_component_properties(labeled_cells, fluor)
+        # --- Stage 9: Final Assembly ---
+        # The true "cell" is the diffuse mask. 
+        # We retain the integer labels from the watershed to keep overlapping cells separate!
         
+        # Build the final labeled map, maintaining watershed separations
+        final_labeled = np.where(diffuse_mask, labeled_all, 0)
+        
+        # We re-compute properties on the final separated labels
+        final_props = self.compute_component_properties(final_labeled, fluor)
+        
+        # We can re-apply size filters just in case morph ops merged things
         final_cell_labels = set()
         final_stats = []
-        
-        for prop in cell_props:
-            if prop['area'] < min_bright_cell_area_px:
+        for prop in final_props:
+            if prop['area'] < min_cell_area_px:
                 continue
             if prop['area'] > max_cell_area_px:
-                continue
-            if prop['compactness'] < min_compactness:
                 continue
             final_cell_labels.add(prop['label'])
             final_stats.append(prop)
 
-        roi_mask = np.isin(labeled_cells, list(final_cell_labels))
-        component_labels = np.where(roi_mask, labeled_cells, 0)
+        roi_mask = np.isin(final_labeled, list(final_cell_labels))
+        component_labels = np.where(roi_mask, final_labeled, 0)
 
         return {
             'roi_mask': roi_mask,

@@ -86,17 +86,20 @@ class FastCounterInterface(metaclass=InterfaceMetaclass):
         pass
 
     @abstract_interface_method
-    def configure(self, bin_width_s, record_length_s, number_of_gates=0):
+    def configure(self, bin_width_s, record_length_s, number_of_gates=0, stop_sweep=0):
         """ Configuration of the fast counter.
 
         @param float bin_width_s: Length of a single time bin in the time race histogram in seconds.
         @param float record_length_s: Total length of the timetrace/each single gate in seconds.
         @param int number_of_gates: optional, number of gates in the pulse sequence. Ignore for not gated counter.
+        @param int stop_sweep: optional, number of sweeps after which to stop measurement.
+                               0 means run indefinitely (default behaviour).
 
-        @return tuple(binwidth_s, record_length_s, number_of_gates):
+        @return tuple(binwidth_s, record_length_s, number_of_gates, stop_sweep):
                     binwidth_s: float the actual set binwidth in seconds
                     gate_length_s: the actual record length in seconds
                     number_of_gates: the number of gated, which are accepted, None if not-gated
+                    stop_sweep: int the actual set stop_sweep value
         """
         pass
 
