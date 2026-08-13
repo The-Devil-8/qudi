@@ -382,17 +382,25 @@ class MultiScaleAutoNVFinderWidget(QtWidgets.QDockWidget):
             
         self.visuals_label.setText('Visual: {0}'.format(name))
         
+        image = None
         # Handle new dict format with x/y coords
         if isinstance(array_data, dict):
             image = array_data.get('image_data')
-            if image is not None and isinstance(image, np.ndarray):
-                self.image_view.setImage(image.T, autoRange=True, autoLevels=True)
-                if self.auto_switch_visuals_cb.isChecked():
-                    self.tabs.setCurrentWidget(self.visuals_widget)
-                    
         # Handle legacy numpy array format
         elif isinstance(array_data, np.ndarray):
-            self.image_view.setImage(array_data.T, autoRange=True, autoLevels=True)
+            image = array_data
+            
+        if image is not None and isinstance(image, np.ndarray):
+            # If it's a boolean mask, show as grayscale (black/white)
+            if image.dtype == bool:
+                image = image.astype(float)
+                gray_cmap = pg.ColorMap([0.0, 1.0], [[0, 0, 0, 255], [255, 255, 255, 255]])
+                self.image_view.setColorMap(gray_cmap)
+            else:
+                # Restore Inferno for fluorescence data
+                self.image_view.setColorMap(self._inferno_colors.colormap)
+                
+            self.image_view.setImage(image.T, autoRange=True, autoLevels=True)
             if self.auto_switch_visuals_cb.isChecked():
                 self.tabs.setCurrentWidget(self.visuals_widget)
 

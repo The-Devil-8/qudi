@@ -390,9 +390,12 @@ class POIExtractor:
             spot_px += 1
 
         # ------ Stage A: CIP detection within processable zone ------
-        raw_candidates = self._detect_in_zone(
+        raw_candidates, detection_diag = self._detect_in_zone(
             fluor, processable_mask, x_coords, y_coords,
             z_current, spot_px, cfg, region_id)
+
+        # Capture detection-stage diagnostics
+        result.diagnostics.update(detection_diag)
 
         result.candidates = list(raw_candidates)
         result.stats['total_detected'] = len(raw_candidates)
@@ -408,7 +411,7 @@ class POIExtractor:
 
         # ------ Stage C: Adaptive narrowing ------
         strong, marginal, rejected = self._narrow_candidates(
-            raw_candidates, zone_stats, pixel_size_um, cfg)
+            raw_candidates, zone_stats, pixel_size_um, cfg, diag=result.diagnostics)
 
         # ------ Stage D: Spatial deconfliction ------
         min_sep_px = cfg['min_separation_factor'] * spot_px
@@ -461,10 +464,28 @@ class POIExtractor:
 
         This avoids edge artefacts from zeroing non-processable pixels
         before running the CIP filters.
+
+        Returns
+        -------
+        tuple
+            (candidates_list, diagnostics_dict)
         """
         cip = self._cip
         ny, nx = fluor.shape
         radius = max(1, spot_px // 2)
+
+        diag = {
+            'noise_sigma': 0.0,
+            'zone_median_corrected': 0.0,
+            'threshold_used': 0.0,
+            'spot_px': spot_px,
+            'n_above_threshold': 0,
+            'n_maxima': 0,
+            'n_zone_maxima': 0,
+            'n_shape_valid': 0,
+            'n_clustered': 0,
+            'early_exit_stage': None,
+        }
 
         # Stage A.1 — Background estimation & subtraction
         background = cip.estimate_background(
@@ -484,6 +505,9 @@ class POIExtractor:
         else:
             zone_noise = float(cip.estimate_noise_level(corrected))
             zone_median = 0.0
+
+        diag['noise_sigma'] = zone_noise
+        diag['zone_median_corrected'] = zone_median
 
         # Stage A.3 — Zone-adaptive threshold
         if zone_noise > 0:
@@ -506,17 +530,23 @@ class POIExtractor:
             min_threshold = zone_median + 2.0 * max(zone_noise, 1.0)
             threshold = max(threshold, min_threshold)
 
+        diag['threshold_used'] = threshold
+
         mask = cip.threshold_intensity(corrected, threshold)
+        diag['n_above_threshold'] = int(np.sum(mask))
 
         if not np.any(mask):
-            return []
+            diag['early_exit_stage'] = 'A3_threshold'
+            return [], diag
 
         # Stage A.4 — Local maxima detection
         maxima_positions = cip.detect_local_maxima(
             corrected, mask, neighborhood_size=spot_px)
+        diag['n_maxima'] = len(maxima_positions)
 
         if len(maxima_positions) == 0:
-            return []
+            diag['early_exit_stage'] = 'A4_maxima'
+            return [], diag
 
         # Stage A.5 — Post-filter: keep only within processable zone
         zone_maxima = []
@@ -524,9 +554,11 @@ class POIExtractor:
             r, c = int(pos[0]), int(pos[1])
             if 0 <= r < ny and 0 <= c < nx and processable_mask[r, c]:
                 zone_maxima.append(pos)
+        diag['n_zone_maxima'] = len(zone_maxima)
 
         if len(zone_maxima) == 0:
-            return []
+            diag['early_exit_stage'] = 'A5_zone_filter'
+            return [], diag
 
         # Stage A.6 — Shape validation
         valid = []
@@ -535,9 +567,11 @@ class POIExtractor:
             is_ok, circ = cip.validate_spot_shape(corrected, r, c, radius)
             if is_ok:
                 valid.append((r, c, circ))
+        diag['n_shape_valid'] = len(valid)
 
         if len(valid) == 0:
-            return []
+            diag['early_exit_stage'] = 'A6_shape'
+            return [], diag
 
         # Stage A.7 — Spatial clustering
         positions = np.array([(r, c) for r, c, _ in valid])
@@ -546,6 +580,7 @@ class POIExtractor:
 
         clustered = cip.cluster_detections(
             positions, intensities, min_distance=spot_px)
+        diag['n_clustered'] = len(clustered)
 
         # Stage A.8 — Sub-pixel Gaussian refinement + candidate creation
         candidates = []
@@ -578,7 +613,7 @@ class POIExtractor:
             )
             candidates.append(cand)
 
-        return candidates
+        return candidates, diag
 
     # ==================================================================
     #  STAGE B — Multi-metric scoring
@@ -719,7 +754,7 @@ class POIExtractor:
     #  STAGE C — Adaptive narrowing
     # ==================================================================
 
-    def _narrow_candidates(self, candidates, zone_stats, pixel_size_um, cfg):
+    def _narrow_candidates(self, candidates, zone_stats, pixel_size_um, cfg, diag=None):
         """Apply multi-gate adaptive narrowing.
 
         Returns (strong, marginal, rejected) lists.
@@ -761,6 +796,13 @@ class POIExtractor:
                 score_threshold = float(threshold_otsu(scores))
             except (ValueError, RuntimeError):
                 score_threshold = float(np.median(scores))
+            # Safety: Otsu on small score arrays can set an absurdly high
+            # threshold that rejects EVERYTHING.  If that happens, fall
+            # back to median so we don't lose all candidates.
+            if score_threshold > float(np.max(scores)):
+                score_threshold = float(np.median(scores))
+                if diag is not None:
+                    diag['otsu_fallback_triggered'] = True
         elif method == 'percentile':
             score_threshold = float(
                 np.percentile(scores, cfg['percentile_threshold']))

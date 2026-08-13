@@ -491,7 +491,30 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
             self._log('Saved micro scan data for region {0} to {1}'.format(self._current_region.region_id, filename))
         except Exception as e:
             self._log('Failed to save micro scan data: {0}'.format(e))
-            
+
+        # --- Diagnostic: Cell processor results ---
+        fluor = image[:, :, 3]
+        self._log('  Image shape: {0}, fluor range: [{1:.0f}, {2:.0f}] c/s'.format(
+            image.shape, float(fluor.min()), float(fluor.max())))
+        self._log('  Cell interior: {0} px ({1:.1f}%), Nucleus: {2} px, '
+                  'Bright clusters: {3} px'.format(
+                      cell_result.diagnostics.get('cell_area_px', 0),
+                      cell_result.diagnostics.get('cell_area_fraction', 0) * 100,
+                      cell_result.diagnostics.get('nucleus_area_px', 0),
+                      cell_result.diagnostics.get('bright_cluster_area_px', 0)))
+        proc_area = cell_result.diagnostics.get('processable_area_px', 0)
+        self._log('  Processable zone: {0} px, processable={1}'.format(
+            proc_area, cell_result.zone_stats.get('processable', False)))
+        if cell_result.zone_stats.get('processable', False):
+            self._log('  Zone stats: median={0:.0f}, std={1:.0f}, '
+                      'max={2:.0f} c/s'.format(
+                          cell_result.zone_stats.get('median_intensity', 0),
+                          cell_result.zone_stats.get('std_intensity', 0),
+                          cell_result.zone_stats.get('max_intensity', 0)))
+        else:
+            self._log('  Zone NOT processable: {0}'.format(
+                cell_result.zone_stats.get('reason', 'unknown')))
+
         if hasattr(cell_result, 'processable_mask'):
             self.sigVisualUpdate.emit(
                 'Processable Zone Mask', cell_result.processable_mask)
@@ -500,6 +523,34 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
         extraction_result = self._poi_extractor.extract(
             cell_result, image, x_coords=x_coords, y_coords=y_coords,
             z_current=z_current, scan_region=self._current_region)
+
+        # --- Diagnostic: Extraction pipeline results ---
+        diag = extraction_result.diagnostics
+        self._log('  CIP: noise={0:.1f}, threshold={1:.1f}, spot_px={2}'.format(
+            diag.get('noise_sigma', 0),
+            diag.get('threshold_used', 0),
+            diag.get('spot_px', 0)))
+        self._log('  CIP stages: above_thr={0}, maxima={1}, in_zone={2}, '
+                  'shape_ok={3}, clustered={4}, total_det={5}'.format(
+                      diag.get('n_above_threshold', 0),
+                      diag.get('n_maxima', 0),
+                      diag.get('n_zone_maxima', 0),
+                      diag.get('n_shape_valid', 0),
+                      diag.get('n_clustered', 0),
+                      extraction_result.stats.get('total_detected', 0)))
+        if diag.get('early_exit_stage'):
+            self._log('  CIP early exit at stage: {0}'.format(
+                diag['early_exit_stage']))
+        if 'reason' in diag:
+            self._log('  Early exit reason: {0}'.format(diag['reason']))
+        if diag.get('otsu_fallback_triggered'):
+            self._log('  WARNING: scikit-image Otsu threshold was too high, fell back to median.')
+        if extraction_result.stats.get('total_detected', 0) > 0:
+            self._log('  After narrowing: strong={0}, marginal={1}, '
+                      'rejected={2}'.format(
+                          extraction_result.stats.get('n_strong', 0),
+                          extraction_result.stats.get('n_marginal', 0),
+                          extraction_result.stats.get('n_rejected', 0)))
 
         strong_cands = extraction_result.strong_candidates
         self._stats['total_candidates'] += len(strong_cands)
