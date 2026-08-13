@@ -42,5 +42,4 @@ dependencies:
     - pyserial
     - uncertainties
     - pyqtgraph
-
-  - scikit-image
+    - scikit-image>=0.24.0
