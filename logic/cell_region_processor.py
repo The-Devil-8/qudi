@@ -333,6 +333,11 @@ class CellRegionProcessor:
         if threshold_method == 'otsu' and HAS_SKIMAGE:
             try:
                 thresh = threshold_otsu(nonzero)
+                # Safety: If the threshold is higher than the 90th percentile,
+                # Otsu is being skewed by extremely bright NV centers and is 
+                # missing the cell body. Fall back to percentile.
+                if thresh > np.percentile(nonzero, 90):
+                    thresh = np.percentile(nonzero, 60)
             except Exception:
                 thresh = np.percentile(nonzero, 60)
         else:

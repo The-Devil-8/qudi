@@ -58,6 +58,13 @@ Because the Processable Zone has its macro-clusters explicitly removed by the `C
 - **Intuition**: An NV center can be 200,000 counts/sec, while the cell background has a median of 30,000 and a standard deviation of 2,000. This yields a z-score of `(200k - 30k) / 2k = 85`. 
 - **Solution**: `POIExtractor._compute_zone_consistency` compares the **raw** candidate intensity to the **raw** zone stats and is very lenient. It gives top scores to candidates up to z-score=30, and high scores up to z-score=100.
 
+### 2.5 Scikit-Image Otsu Fallbacks for Extreme Brightness Outliers
+When `scikit-image` is available, the pipeline uses `threshold_otsu` for cell segmentation and candidate narrowing. However, NV centers can reach 13-20 million counts/sec, creating extreme outliers that heavily skew the Otsu algorithm (which is designed for standard images).
+- **Cell Segmenter Impact**: Otsu gets skewed by extreme NVs, setting a cell-body threshold in the millions and dropping the actual faint cell body (resulting in 0 px processable zones).
+  - **Solution**: In `CellRegionProcessor`, if the calculated Otsu threshold exceeds the 90th percentile of image intensities, it is rejected as skewed and falls back to a safe `np.percentile(nonzero, 60)`.
+- **POI Extractor Impact**: When narrowing candidates, running Otsu on a tiny array of 5-10 similarly-scored candidates can calculate a threshold *higher than the maximum score in the array*, wrongly classifying 100% of candidates as "marginal".
+  - **Solution**: In `POIExtractor`, if `score_threshold > np.max(scores)`, it falls back to `np.median(scores)` to keep the top 50% of candidates safely.
+
 ## 3. Immediate Next Steps
 
 1. Run the full pipeline in `hybrid` mode on a known sample to collect the first combined optical verification + pulsed measurement + drift tracking dataset.
