@@ -50,6 +50,7 @@ try:
     from skimage.filters import threshold_otsu
     from skimage.measure import find_contours, regionprops
     HAS_SKIMAGE = True
+    print("has+skiimage"+str(HAS_SKIMAGE))
 except ImportError:
     HAS_SKIMAGE = False
 
