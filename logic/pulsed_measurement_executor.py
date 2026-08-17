@@ -137,6 +137,10 @@ class PulsedMeasurementExecutor(GenericLogic):
         """Schedules a state transition on the Qt event loop."""
         QtCore.QTimer.singleShot(0, lambda: self._transition_to(state))
 
+    def _settle_transition(self, state):
+        """Schedules a state transition with a 100ms settle delay."""
+        QtCore.QTimer.singleShot(100, lambda: self._transition_to(state))
+
     def _transition_to(self, state):
         """Drives the state machine transitions."""
         # Guard: drop stale deferred transitions that arrive after
@@ -157,23 +161,25 @@ class PulsedMeasurementExecutor(GenericLogic):
                 
             elif state == 'PULSER_OFF':
                 self._pml.toggle_pulse_generator(False)
-                self._deferred_transition('STOP_PREV_MEASUREMENT')
+                self._settle_transition('STOP_PREV_MEASUREMENT')
                 
             elif state == 'STOP_PREV_MEASUREMENT':
                 self._pml.toggle_pulsed_measurement(False)
-                self._deferred_transition('LOAD_MEASUREMENT')
+                self._settle_transition('LOAD_MEASUREMENT')
                 
             elif state == 'LOAD_MEASUREMENT':
+                self._current_state = 'WAIT_LOAD_COMPLETE'
+                self.sigMeasurementProgress.emit(self._current_state, "Transitioning")
                 self._pml.sample_ensemble(self._measurement_name, with_load=True)
-                self._deferred_transition('WAIT_LOAD_COMPLETE')
                 
             elif state == 'WAIT_LOAD_COMPLETE':
                 # Waiting for sigLoadedAssetUpdated or sampload_busy
                 pass
                 
             elif state == 'START_MEASUREMENT':
+                self._current_state = 'WAIT_MEASUREMENT'
+                self.sigMeasurementProgress.emit(self._current_state, "Transitioning")
                 self._pml.toggle_pulsed_measurement(True)
-                self._deferred_transition('WAIT_MEASUREMENT')
                 
             elif state == 'WAIT_MEASUREMENT':
                 # Waiting for sigMeasurementStatusUpdated(False)
@@ -188,11 +194,13 @@ class PulsedMeasurementExecutor(GenericLogic):
                 
             elif state == 'PULSER_OFF_2':
                 self._pml.toggle_pulse_generator(False)
-                self._deferred_transition('LOAD_LASER')
+                self._settle_transition('LOAD_LASER')
                 
             elif state == 'LOAD_LASER':
+                self._current_state = 'WAIT_LASER_LOADED'
+                self.sigMeasurementProgress.emit(self._current_state, "Transitioning")
                 self._pml.sample_ensemble(self._laser_pulse_name, with_load=True)
-                self._deferred_transition('WAIT_LASER_LOADED')
+                
                 
             elif state == 'WAIT_LASER_LOADED':
                 # Waiting for sigLoadedAssetUpdated

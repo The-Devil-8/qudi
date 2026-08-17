@@ -28,8 +28,11 @@
    - Qt signal-driven state machine that automates T1/ODMR experiment sequences through `PulsedMasterLogic`.
    - Sequence: pulser off → stop prev measurement → sample+load measurement ensemble → run → wait for completion → save data → pulser off → sample+load laser pulse → pulser on.
    - 15-minute configurable safety timeout. All transitions use signal correlation (no blocking waits).
+   - **State machine uses set-state-before-call pattern**: For states that invoke an async PML method, the wait state is set *before* the async call is made.  This prevents a race condition where the callback arrives before a deferred state transition.  Fire-and-forget operations (pulser off, stop measurement) use 100 ms settle timers instead.
 7. **Full Experiment Loop** (`logic/multi_scale_auto_nv_finder_logic.py`) — **DONE**
-   - Complete orchestration: macro scan → ROI segmentation → for each cell: micro scan → cell processing → POI extraction → POI filtering (non-repetition radius) → verification (hybrid mode) → pulsed measurement → drift snapshot → repeat until NVs/cell met (with re-scanning) → next cell.
+   - Complete orchestration: macro scan → ROI segmentation → for each cell: micro scan → cell processing → POI extraction → POI filtering (non-repetition radius) → **serial one-at-a-time** verification (hybrid mode) → pulsed measurement → drift snapshot → repeat until NVs/cell met (with re-scanning) → next cell.
+   - **Strictly serial one-at-a-time candidate flow**: candidates are sent to `NVCandidateVerifier` one at a time.  Each candidate's full lifecycle (optical verification → pulsed measurement → completion) must finish before the next candidate is dispatched.  See §2.6 for the hardware constraint that requires this.
+   - Signal connections to `NVCandidateVerifier` and `PulsedMeasurementExecutor` are established once in `on_activate()` and torn down in `on_deactivate()`.  Per-batch connect/disconnect is not used (it caused duplicate handlers and leaked connections on error paths).
    - Tracks per-cell NV targets (default 2-3), total cell targets, drift records, and measurement results.
    - POI non-repetition filtering removes candidates within 1 µm of previously measured NVs.
 8. **Z-Scan Surface Finding** (`logic/z_surface_finder.py`) — **STUB**
@@ -65,9 +68,30 @@ When `scikit-image` is available, the pipeline uses `threshold_otsu` for cell se
 - **POI Extractor Impact**: When narrowing candidates, running Otsu on a tiny array of 5-10 similarly-scored candidates can calculate a threshold *higher than the maximum score in the array*, wrongly classifying 100% of candidates as "marginal".
   - **Solution**: In `POIExtractor`, if `score_threshold > np.max(scores)`, it falls back to `np.median(scores)` to keep the top 50% of candidates safely.
 
+### 2.6 Hardware Exclusivity: Verification vs. Pulsed Measurement
+The `NVCandidateVerifier` uses the **optimizer/confocal scanning hardware** to perform optical refocus scans on candidates.  The `PulsedMeasurementExecutor` uses the **pulse generator and fast counter** to run T1/ODMR experiments.  These two subsystems share electrical and timing resources that prevent concurrent operation:
+
+- The fast counter (used for pulsed measurement) drives acquisition timing.  Running a confocal (optimizer) scan while the fast counter is active will produce corrupted data or hardware contention errors.
+- The pulse generator state must be well-defined for both systems — the optimizer expects laser-only CW operation, while pulsed experiments require specific pulse sequences.
+
+**Critical Design Rule**: The orchestrator (`MultiScaleAutoNVFinderLogic`) must enforce **strictly serial** processing:
+
+```
+Verify Candidate N (optimizer scans) → Accept/Reject
+  If Accepted → Run Pulsed Measurement (T1/ODMR) → Wait for completion → Verify Candidate N+1
+  If Rejected → Verify Candidate N+1 immediately
+```
+
+Candidates are dispatched to the verifier **one at a time** as single-element batches.  The orchestrator's `_verify_next_candidate()` method enforces that no new candidate is sent until the current candidate's entire lifecycle (optical verification + pulsed measurement) is complete.  This constraint is documented in the method's docstring and in the pipeline comment block.
+
+This design also eliminates three classes of synchronization bugs:
+1. **Race between deferred transitions and async callbacks** in `PulsedMeasurementExecutor` — fixed by setting wait states *before* async calls.
+2. **Candidate acceptance flooding** — eliminated because only one candidate is verified at a time, so at most one `sigCandidateAccepted` can fire before the orchestrator explicitly dispatches the next.
+3. **Signal connection leaks** — eliminated by connecting verifier/executor signals once in `on_activate()` instead of per-batch.
+
 ## 3. Immediate Next Steps
 
-1. Run the full pipeline in `hybrid` mode on a known sample to collect the first combined optical verification + pulsed measurement + drift tracking dataset.
+1. Run the full pipeline in `hybrid` mode on a known sample with `enable_pulsed_measurement: True` to validate the serial verify→measure flow end-to-end.  Confirm no "Cannot start measurement while one is already active" errors.
 2. Analyze the `DriftTracker` snapshots from step 1 to quantify typical hardware drift during T1/ODMR measurements (expected 10-30 minutes per NV). This calibration data feeds the future drift compensation module.
 3. Review the `POIVerificationLogger` audit logs alongside pulsed measurement results to correlate optical fit quality with actual NV behavior under T1/ODMR.
 4. Implement `ZSurfaceFinder.find_surface()` using the calibration Z-scan profiles collected in step 1 — identify the bright layer peak (top 2%) and validate depth targeting.

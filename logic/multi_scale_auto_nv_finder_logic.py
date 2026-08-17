@@ -144,17 +144,69 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
         self._pending_candidates = []
         self._current_candidate_index = 0
 
+        # Strict serialization flags — ensures no concurrent verify + measure
+        self._pulsed_measurement_pending = False
+        self._verification_batch_done = False
+        self._current_measurement_candidate = None
+
         # Measurement results for current run
         self._measurement_results = []
 
     def on_activate(self):
         self._set_state('idle')
         self._stop_requested = False
+
+        # ------------------------------------------------------------------
+        # Connect verifier and executor signals ONCE for the module lifetime.
+        # This avoids the bug where per-batch connect/disconnect calls
+        # accumulate duplicate handlers or leave stale connections on error
+        # paths.
+        # ------------------------------------------------------------------
+        verifier = self.nvcandidateverifier()
+        verifier.sigCandidateAccepted.connect(
+            self._on_candidate_accepted, QtCore.Qt.QueuedConnection)
+        verifier.sigCandidateRejected.connect(
+            self._on_candidate_rejected, QtCore.Qt.QueuedConnection)
+        verifier.sigVerificationFinished.connect(
+            self._on_verification_batch_complete,
+            QtCore.Qt.QueuedConnection)
+
+        executor = self._get_executor()
+        if executor is not None:
+            executor.sigMeasurementComplete.connect(
+                self._on_measurement_complete, QtCore.Qt.QueuedConnection)
+            executor.sigMeasurementError.connect(
+                self._on_measurement_error, QtCore.Qt.QueuedConnection)
+
         self.log.info('MultiScaleAutoNVFinderLogic activated.')
 
     def on_deactivate(self):
         if self._state != 'idle':
             self.stop_multi_scale_find()
+
+        # Disconnect verifier signals
+        verifier = self.nvcandidateverifier()
+        try:
+            verifier.sigCandidateAccepted.disconnect(
+                self._on_candidate_accepted)
+            verifier.sigCandidateRejected.disconnect(
+                self._on_candidate_rejected)
+            verifier.sigVerificationFinished.disconnect(
+                self._on_verification_batch_complete)
+        except (TypeError, RuntimeError):
+            pass
+
+        # Disconnect executor signals
+        executor = self._get_executor()
+        if executor is not None:
+            try:
+                executor.sigMeasurementComplete.disconnect(
+                    self._on_measurement_complete)
+                executor.sigMeasurementError.disconnect(
+                    self._on_measurement_error)
+            except (TypeError, RuntimeError):
+                pass
+
         self.log.info('MultiScaleAutoNVFinderLogic deactivated.')
 
     # =====================================================================
@@ -578,40 +630,87 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
             QtCore.QTimer.singleShot(0, self._process_next_region)
             return
 
-        # 4. Queue filtered candidates for sequential verification
+        # 4. Queue filtered candidates for one-at-a-time serial processing.
+        #    HARDWARE CONSTRAINT: The verifier (optimizer/confocal) and the
+        #    pulsed measurement (pulse generator / fast counter) cannot run
+        #    concurrently.  We send candidates to the verifier ONE AT A TIME
+        #    and wait for each candidate's full lifecycle (verify → measure)
+        #    to complete before starting the next.
         self._pending_candidates = filtered_cands
         self._current_candidate_index = 0
+        self._pulsed_measurement_pending = False
+        self._verification_batch_done = False
 
-        # 5. Send all candidates to verifier as a batch
-        self._set_state('verification')
-        self._log('Sending {0} candidates to Verifier...'.format(
+        self._log('Queued {0} candidates for serial verify+measure.'.format(
             len(filtered_cands)))
 
-        verifier = self.nvcandidateverifier()
-        verifier.sigCandidateAccepted.connect(
-            self._on_candidate_accepted, QtCore.Qt.QueuedConnection)
-        verifier.sigVerificationFinished.connect(
-            self._on_verification_batch_complete,
-            QtCore.Qt.QueuedConnection)
+        # 5. Start verifying the FIRST candidate only
+        self._verify_next_candidate()
 
+    # =====================================================================
+    # INTERNAL: One-at-a-time verification + serial measurement flow
+    # =====================================================================
+
+    def _verify_next_candidate(self):
+        """Send the next single candidate to the verifier.
+
+        HARDWARE CONSTRAINT: This must only be called when no pulsed
+        measurement is running and no verifier batch is active.  The
+        verifier (optimizer/confocal hardware) and the pulsed measurement
+        (pulse generator / fast counter) cannot operate concurrently.
+        """
+        if self._state == 'idle':
+            return
+        if self._stop_requested:
+            self._finish('Stopped by user.')
+            return
+
+        target_nvs = int(self._val(self.target_nvs_per_cell, 3))
+        if self._cell_nv_count >= target_nvs:
+            self._log('Target NVs/cell met ({0}). Advancing to '
+                      'next cell.'.format(self._cell_nv_count))
+            self._complete_current_cell()
+            return
+
+        if self._current_candidate_index >= len(self._pending_candidates):
+            self._log('All candidates exhausted for cell {0}.'.format(
+                self._current_region.region_id))
+            self._complete_current_cell()
+            return
+
+        candidate = self._pending_candidates[self._current_candidate_index]
+        cand_id = (getattr(candidate, 'candidate_id', None)
+                   or str(self._current_candidate_index))
+
+        self._set_state('verification')
+        self._verification_batch_done = False
+        self._pulsed_measurement_pending = False
+
+        self._log('Verifying candidate {0} ({1}/{2})...'.format(
+            cand_id,
+            self._current_candidate_index + 1,
+            len(self._pending_candidates)))
+
+        # Send a SINGLE candidate as a batch-of-one.  The verifier will
+        # complete the full optical check for this one candidate before
+        # sigVerificationFinished fires.
+        verifier = self.nvcandidateverifier()
         verifier.verify_batch(
-            filtered_cands,
+            [candidate],
             run_context={
                 'region_id': self._current_region.region_id,
                 'cell_nv_count': self._cell_nv_count,
+                'candidate_index': self._current_candidate_index,
                 'rescan_number': self._cell_rescan_count,
             })
-
-    # =====================================================================
-    # INTERNAL: Verification + measurement flow (NV-level)
-    # =====================================================================
 
     def _on_candidate_accepted(self, accepted_record):
         """Handle an optically verified candidate from NVCandidateVerifier.
 
-        This is called for each individual candidate that passes optical
-        gates. If pulsed measurement is enabled, we queue it for
-        measurement. Otherwise we count it directly.
+        If pulsed measurement is enabled, start it and set the pending
+        flag so that `_on_verification_batch_complete` knows to wait.
+        The next candidate will only be dispatched once BOTH the
+        verification batch and the pulsed measurement have finished.
         """
         if self._state == 'idle':
             return
@@ -638,10 +737,22 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
 
         pulsed_enabled = bool(self._val(self.enable_pulsed_measurement, False))
         if pulsed_enabled:
+            # Mark pending BEFORE starting — _on_verification_batch_complete
+            # will check this flag and wait for measurement to finish.
+            self._pulsed_measurement_pending = True
             self._start_pulsed_measurement(accepted_record)
+            # DO NOT advance to next candidate here.  The serial flow
+            # continues in _on_measurement_complete → _advance_after_measurement.
         else:
             # No pulsed measurement — just count the verified NV
             self._register_measured_nv(accepted_record, measurement_result=None)
+
+    def _on_candidate_rejected(self, rejected_record):
+        """Handle a rejected candidate.  Logged for diagnostics."""
+        if self._state == 'idle':
+            return
+        self._log('Candidate {0} rejected.'.format(
+            rejected_record.get('candidate_id', 'unknown')))
 
     def _start_pulsed_measurement(self, accepted_record):
         """Start a pulsed measurement (T1/ODMR) on an accepted candidate."""
@@ -649,6 +760,7 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
         if executor is None:
             self._log('WARNING: PulsedMeasurementExecutor not connected. '
                       'Counting NV without measurement.')
+            self._pulsed_measurement_pending = False
             self._register_measured_nv(
                 accepted_record, measurement_result=None)
             return
@@ -665,12 +777,6 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
         self._log('Starting pulsed measurement for {0}...'.format(
             accepted_record.get('candidate_id', 'unknown')))
 
-        # Connect to measurement completion signal
-        executor.sigMeasurementComplete.connect(
-            self._on_measurement_complete, QtCore.Qt.QueuedConnection)
-        executor.sigMeasurementError.connect(
-            self._on_measurement_error, QtCore.Qt.QueuedConnection)
-
         # Store current candidate for the measurement callback
         self._current_measurement_candidate = accepted_record
 
@@ -683,28 +789,27 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
             laser_pulse_name=pulse_ensemble)
 
     def _on_measurement_complete(self, result):
-        """Handle completed pulsed measurement."""
+        """Handle completed pulsed measurement.
+
+        After processing the result, advance to the next candidate.
+        This is the ONLY place that resumes the serial pipeline after a
+        pulsed measurement.  The verifier is never started until this
+        method runs.
+        """
         if self._state == 'idle':
             return
 
-        executor = self._get_executor()
-        if executor is not None:
-            try:
-                executor.sigMeasurementComplete.disconnect(
-                    self._on_measurement_complete)
-                executor.sigMeasurementError.disconnect(
-                    self._on_measurement_error)
-            except (TypeError, RuntimeError):
-                pass
-
         if self._stop_requested:
+            self._pulsed_measurement_pending = False
             self._finish('Stopped during pulsed measurement.')
             return
 
-        candidate = getattr(self, '_current_measurement_candidate', None)
+        candidate = self._current_measurement_candidate
         if candidate is None:
             self._log('WARNING: Measurement completed but no candidate '
                       'record found.')
+            self._pulsed_measurement_pending = False
+            self._advance_after_measurement()
             return
 
         # Record post-measurement drift snapshot
@@ -734,12 +839,29 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
                 result.get('error', 'unknown error')))
 
         self._current_measurement_candidate = None
-        if self._state == 'pulsed_measurement':
-            self._set_state('verification')
+        self._pulsed_measurement_pending = False
+
+        # Advance to the next candidate in the serial pipeline.
+        self._advance_after_measurement()
 
     def _on_measurement_error(self, error_msg):
-        """Handle pulsed measurement error."""
+        """Handle pulsed measurement error (non-fatal logging)."""
         self._log('Measurement error: {0}'.format(error_msg))
+
+    def _advance_after_measurement(self):
+        """Advance to the next candidate after a measurement completes.
+
+        This is called from _on_measurement_complete.  It waits for the
+        verification batch to have finished (which it usually has, since
+        we send single-candidate batches) and then dispatches the next
+        candidate.
+        """
+        if self._state == 'idle' or self._stop_requested:
+            return
+
+        self._current_candidate_index += 1
+        self._set_state('verification')
+        QtCore.QTimer.singleShot(0, self._verify_next_candidate)
 
     def _register_measured_nv(self, accepted_record, measurement_result):
         """Register an NV as successfully measured."""
@@ -782,31 +904,45 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
     # =====================================================================
 
     def _on_verification_batch_complete(self, verification_result):
-        """Handle completion of a verification batch."""
+        """Handle completion of a single-candidate verification batch.
+
+        In the one-at-a-time flow, this fires after each candidate's
+        optical verification finishes.  If a pulsed measurement is
+        pending for this candidate, we do NOT advance — the serial flow
+        will continue from `_on_measurement_complete` instead.  If no
+        measurement is pending (candidate was rejected, or pulsed
+        measurement is disabled), we advance to the next candidate.
+        """
         if self._state == 'idle':
             return
 
-        verifier = self.nvcandidateverifier()
-        try:
-            verifier.sigCandidateAccepted.disconnect(
-                self._on_candidate_accepted)
-            verifier.sigVerificationFinished.disconnect(
-                self._on_verification_batch_complete)
-        except (TypeError, RuntimeError):
-            pass
+        self._verification_batch_done = True
 
         if self._stop_requested:
             self._finish('Stopped during verification.')
             return
 
-        target_nvs = int(self._val(self.target_nvs_per_cell, 3))
-        self._log('Verification batch complete for {0}. '
-                  'NVs measured this cell: {1}/{2}'.format(
-                      self._current_region.region_id,
-                      self._cell_nv_count,
-                      target_nvs))
+        if self._pulsed_measurement_pending:
+            # A pulsed measurement is still running for this candidate.
+            # _on_measurement_complete will call _advance_after_measurement
+            # once the measurement finishes.  Do NOT start the next
+            # candidate now — the hardware is busy.
+            self._log('Verification batch done; waiting for pulsed '
+                      'measurement to finish before advancing.')
+            return
 
-        # Mark this cell region as completed in the queue and stats
+        # No measurement pending — candidate was rejected or pulsed
+        # measurement is disabled.  Advance to the next candidate.
+        self._current_candidate_index += 1
+        QtCore.QTimer.singleShot(0, self._verify_next_candidate)
+
+    def _complete_current_cell(self):
+        """Mark the current cell as done and advance to the next region."""
+        target_nvs = int(self._val(self.target_nvs_per_cell, 3))
+        self._log('Cell {0} complete. NVs measured: {1}/{2}'.format(
+            self._current_region.region_id,
+            self._cell_nv_count, target_nvs))
+
         self._queue.mark_region_status(
             self._current_region.region_id, 'processed',
             nv_candidates_found=self._cell_nv_count)
