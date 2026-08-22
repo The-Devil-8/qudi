@@ -39,6 +39,7 @@ from core.util.mutex import Mutex
 
 # Standalone processing classes
 from logic.roi_segmentation_logic import ROISegmentationLogic
+from logic.sample_characterization_engine import SampleCharacterizationEngine
 from logic.scan_region_queue import ScanRegionQueue
 from logic.cell_region_processor import CellRegionProcessor
 from logic.poi_extractor import POIExtractor
@@ -119,7 +120,10 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
         self._stop_requested = False
 
         # Processing pipelines
-        self._roi_segmenter = ROISegmentationLogic()
+        # NOTE: ROISegmentationLogic replaced by SampleCharacterizationEngine
+        # which intelligently selects between sparse and dense algorithms.
+        self._sample_engine = SampleCharacterizationEngine()
+        self._roi_segmenter = ROISegmentationLogic()  # kept as fallback
         self._queue = ScanRegionQueue()
         self._cell_processor = CellRegionProcessor()
         self._poi_extractor = POIExtractor()
@@ -396,16 +400,24 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
             return
 
         self._set_state('macro_segmentation')
-        self._log('MACRO scan complete. Running ROI segmentation...')
+        self._log('MACRO scan complete. Running sample characterization...')
 
         image = self.confocallogic().xy_image
         self.sigVisualUpdate.emit('Macro Scan', image)
         x_coords = image[0, :, 0]
         y_coords = image[:, 0, 1]
 
-        # 1. Segment ROI
-        seg_result = self._roi_segmenter.segment_roi(
+        # 1. Characterize sample and run optimal segmentation algorithm
+        char_result = self._sample_engine.characterize_and_segment(
             image, min_cell_area_um2=float(self._val(self.min_cell_area_um2, 50.0)))
+        seg_result = char_result.segmentation_dict
+        self._log(
+            'Sample classified as: {0} (confidence={1:.2f}, algo={2}). '
+            '{3} cells detected.'.format(
+                char_result.characterization.sample_type.value,
+                char_result.characterization.confidence,
+                char_result.segmentation.algorithm_used.value,
+                char_result.characterization.estimated_cell_count))
 
         # 2. Queue regions
         self._queue = ScanRegionQueue()

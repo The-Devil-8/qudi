@@ -55,24 +55,31 @@ Automates the process of locating NV centers in a diamond sample by:
 | 20 | [POI Extractor](20_poi_extractor_module.md) | Processable-zone candidate scoring, narrowing, and ranking |
 | 21 | [NVCandidateVerifier](21_nv_candidate_verifier.md) | Repeated asynchronous optical verification and auditable POI registration |
 | 22 | [POI Verification Logging](22_poi_verification_logging.md) | Durable per-POI optimizer evidence, drift analysis, and tuning exports |
+| 23 | [Pulsed Measurement Executor](23_pulsed_measurement_executor.md) | Asynchronous pulsed sequence execution and fidelity tracking |
+| 24 | [Full Experiment Loop](24_full_experiment_loop.md) | Multi-cell scanning, POI filtering, verification, and drift tracking loop |
+| 25 | [Algorithm Intuitions & Upgrades](25_algorithm_intuitions_and_upgrades.md) | Upgraded heuristics for ROI segmentation, noise bounding, and POI extraction |
+| 26 | [Sample Characterization Engine](26_sample_characterization_engine.md) | Intelligent pre-segmentation analyzer, router, and algorithm dueler |
 
 ## Quick Start
 
 1. Read [15 — Phased Implementation Plan](15_phased_implementation_plan.md) for **comprehensive next steps**
 2. Read [16 — Testing Data Requirements](16_testing_data_requirements.md) before Phase 2+ (current 200 µm data is incomplete)
 3. Read [17 — Algorithm Optimization](17_algorithm_optimization.md) when tuning cell / ROI / CIP
-4. Read [14 — Roadmap & Status](14_automation_roadmap_and_status.md) for executive summary
-5. Read [12 — User Guide](12_user_guide.md) for how to run today's single-scale pipeline
-6. Read [07 — Architecture](07_auto_nv_finder_architecture.md) for system design
-7. Refer to [11 — Troubleshooting](11_troubleshooting.md) if issues arise
+4. Read [26 — Sample Characterization Engine](26_sample_characterization_engine.md) for pre-segmentation algorithm selection
+5. Read [14 — Roadmap & Status](14_automation_roadmap_and_status.md) for executive summary
+6. Read [12 — User Guide](12_user_guide.md) for how to run today's single-scale pipeline
+7. Read [07 — Architecture](07_auto_nv_finder_architecture.md) for system design
+8. Refer to [11 — Troubleshooting](11_troubleshooting.md) if issues arise
 
 ## Related Files
 
 | File | Role |
 |------|------|
 | `logic/auto_nv_finder_logic.py` | Core automation engine (single-scale CIP → optimize → POI) |
+| `logic/sample_characterization_engine.py` | Intelligent pre-segmentation router & algorithm dueler |
+| `logic/cell_segmentation_sparse.py` | AlgoA: Seeded hysteresis sparse cell segmentation |
+| `logic/cell_segmentation_logic.py` | AlgoB: White Top-Hat adaptive dense cell segmentation |
 | `logic/roi_segmentation_logic.py` | Cell ROI + bright cluster rejection (offline; Phase 1 target) |
-| `logic/cell_segmentation_logic.py` | Cell boundary mask from wide scans |
 | `logic/image_analysis.py` | CIP utility functions |
 | `logic/image_rebuild_logic.py` | `.dat` → image visualization |
 | `logic/optimizer_logic.py` | Position optimization |
