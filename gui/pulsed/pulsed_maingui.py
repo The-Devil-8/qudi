@@ -304,7 +304,8 @@ class PulsedMeasurementGui(GUIBase):
         # Connect signals used in predefined methods config dialog
         self._pm_cfg.accepted.connect(self.apply_predefined_methods_config)
         self._pm_cfg.rejected.connect(self.keep_former_predefined_methods_config)
-        self._pm_cfg.buttonBox.button(QtWidgets.QDialogButtonBox.Apply).clicked.connect(self.apply_predefined_methods_config)
+        self._pm_cfg.buttonBox.button(QtWidgets.QDialogButtonBox.Apply).clicked.connect(
+            self.apply_predefined_methods_config)
 
         # Connect signals used in analysis settings dialog
         self._as.accepted.connect(self.update_analysis_settings)
@@ -385,9 +386,10 @@ class PulsedMeasurementGui(GUIBase):
         self._pa.ana_param_x_axis_start_ScienDSpinBox.editingFinished.connect(self.measurement_settings_changed)
         self._pa.ana_param_x_axis_inc_ScienDSpinBox.editingFinished.connect(self.measurement_settings_changed)
         self._pa.ana_param_num_laser_pulse_SpinBox.editingFinished.connect(self.measurement_settings_changed)
+        self._pa.ana_param_log_spacing_CheckBox.stateChanged.connect(self.measurement_settings_changed)
 
         self._pa.ana_param_record_length_DoubleSpinBox.editingFinished.connect(self.fast_counter_settings_changed)
-        self._pa.ana_param_stop_sweep_SpinBox.editingFinished.connect(self.fast_counter_settings_changed)
+        self._pa.ana_param_stop_sweep_SpinBox.editingFinished.connect(self.fast_counter_settings_changed) #Pratik: stop sweep
         self._pa.ana_param_fc_bins_ComboBox.currentIndexChanged.connect(self.fast_counter_settings_changed)
 
         self._pa.time_param_ana_periode_DoubleSpinBox.editingFinished.connect(self.measurement_timer_changed)
@@ -544,9 +546,10 @@ class PulsedMeasurementGui(GUIBase):
         self._pa.ana_param_x_axis_start_ScienDSpinBox.editingFinished.disconnect()
         self._pa.ana_param_x_axis_inc_ScienDSpinBox.editingFinished.disconnect()
         self._pa.ana_param_num_laser_pulse_SpinBox.editingFinished.disconnect()
+        self._pa.ana_param_log_spacing_CheckBox.stateChanged.disconnect()
 
         self._pa.ana_param_record_length_DoubleSpinBox.editingFinished.disconnect()
-        self._pa.ana_param_stop_sweep_SpinBox.editingFinished.disconnect()
+        self._pa.ana_param_stop_sweep_SpinBox.editingFinished.disconnect() #Pratik: stop sweep
         self._pa.ana_param_fc_bins_ComboBox.currentIndexChanged.disconnect()
 
         self._pa.time_param_ana_periode_DoubleSpinBox.editingFinished.disconnect()
@@ -768,6 +771,7 @@ class PulsedMeasurementGui(GUIBase):
             self._pa.ana_param_x_axis_start_ScienDSpinBox.setEnabled(False)
             self._pa.ana_param_x_axis_inc_ScienDSpinBox.setEnabled(False)
             self._pa.ana_param_num_laser_pulse_SpinBox.setEnabled(False)
+            self._pa.ana_param_log_spacing_CheckBox.setEnabled(False)
             self._pa.ana_param_record_length_DoubleSpinBox.setEnabled(False)
             self._pa.ext_control_use_mw_CheckBox.setEnabled(False)
             self._pa.ana_param_fc_bins_ComboBox.setEnabled(False)
@@ -816,8 +820,9 @@ class PulsedMeasurementGui(GUIBase):
                 self._pa.ana_param_x_axis_start_ScienDSpinBox.setEnabled(True)
                 self._pa.ana_param_x_axis_inc_ScienDSpinBox.setEnabled(True)
                 self._pa.ana_param_num_laser_pulse_SpinBox.setEnabled(True)
+                self._pa.ana_param_log_spacing_CheckBox.setEnabled(True)
                 self._pa.ana_param_record_length_DoubleSpinBox.setEnabled(True)
-                self._pa.ana_param_stop_sweep_SpinBox.setEnabled(True)
+                self._pa.ana_param_stop_sweep_SpinBox.setEnabled(True) #Pratik: stop sweep
             if self._mw.action_run_stop.isChecked():
                 self._mw.action_run_stop.toggle()
         if is_paused:
@@ -1312,49 +1317,49 @@ class PulsedMeasurementGui(GUIBase):
             # run through all parameters of the current method and create the widgets
             self._pm.method_param_widgets[method_name] = dict()
             for param_index, (param_name, param) in enumerate(method_params[method_name].items()):
-                    # create a label for the parameter
-                    param_label = QtWidgets.QLabel(groupBox)
-                    param_label.setText(param_name)
-                    # create proper input widget for the parameter depending on default value type
-                    if type(param) is bool:
-                        input_obj = QtWidgets.QCheckBox(groupBox)
-                        input_obj.setChecked(param)
-                    elif type(param) is float:
-                        input_obj = ScienDSpinBox(groupBox)
-                        if 'amp' in param_name or 'volt' in param_name:
-                            input_obj.setSuffix('V')
-                        elif 'freq' in param_name:
-                            input_obj.setSuffix('Hz')
-                        elif 'time' in param_name or 'period' in param_name or 'tau' in param_name:
-                            input_obj.setSuffix('s')
-                        input_obj.setMinimumSize(QtCore.QSize(80, 0))
-                        input_obj.setValue(param)
-                    elif type(param) is int:
-                        input_obj = ScienSpinBox(groupBox)
-                        input_obj.setValue(param)
-                    elif type(param) is str:
-                        input_obj = QtWidgets.QLineEdit(groupBox)
-                        input_obj.setMinimumSize(QtCore.QSize(80, 0))
-                        input_obj.setText(param)
-                    elif issubclass(type(param), Enum):
-                        input_obj = QtWidgets.QComboBox(groupBox)
-                        for option in type(param):
-                            input_obj.addItem(option.name, option)
-                        input_obj.setCurrentText(param.name)
-                        # Set size constraints
-                        input_obj.setMinimumSize(QtCore.QSize(80, 0))
-                    else:
-                        self.log.error('The predefined method "{0}" has an argument "{1}" which '
-                                       'has no default argument or an invalid type (str, float, '
-                                       'int, bool or Enum allowed)!\nCreation of the viewbox aborted.'
-                                       ''.format('generate_' + method_name, param_name))
-                        continue
-                    # Adjust size policy
-                    input_obj.setMinimumWidth(75)
-                    input_obj.setMaximumWidth(100)
-                    gridLayout.addWidget(param_label, 0, param_index + 1, 1, 1)
-                    gridLayout.addWidget(input_obj, 1, param_index + 1, 1, 1)
-                    self._pm.method_param_widgets[method_name][param_name] = input_obj
+                # create a label for the parameter
+                param_label = QtWidgets.QLabel(groupBox)
+                param_label.setText(param_name)
+                # create proper input widget for the parameter depending on default value type
+                if type(param) is bool:
+                    input_obj = QtWidgets.QCheckBox(groupBox)
+                    input_obj.setChecked(param)
+                elif type(param) is float:
+                    input_obj = ScienDSpinBox(groupBox)
+                    if 'amp' in param_name or 'volt' in param_name:
+                        input_obj.setSuffix('V')
+                    elif 'freq' in param_name:
+                        input_obj.setSuffix('Hz')
+                    elif 'time' in param_name or 'period' in param_name or 'tau' in param_name:
+                        input_obj.setSuffix('s')
+                    input_obj.setMinimumSize(QtCore.QSize(80, 0))
+                    input_obj.setValue(param)
+                elif type(param) is int:
+                    input_obj = ScienSpinBox(groupBox)
+                    input_obj.setValue(param)
+                elif type(param) is str:
+                    input_obj = QtWidgets.QLineEdit(groupBox)
+                    input_obj.setMinimumSize(QtCore.QSize(80, 0))
+                    input_obj.setText(param)
+                elif issubclass(type(param), Enum):
+                    input_obj = QtWidgets.QComboBox(groupBox)
+                    for option in type(param):
+                        input_obj.addItem(option.name, option)
+                    input_obj.setCurrentText(param.name)
+                    # Set size constraints
+                    input_obj.setMinimumSize(QtCore.QSize(80, 0))
+                else:
+                    self.log.error('The predefined method "{0}" has an argument "{1}" which '
+                                   'has no default argument or an invalid type (str, float, '
+                                   'int, bool or Enum allowed)!\nCreation of the viewbox aborted.'
+                                   ''.format('generate_' + method_name, param_name))
+                    continue
+                # Adjust size policy
+                input_obj.setMinimumWidth(75)
+                input_obj.setMaximumWidth(100)
+                gridLayout.addWidget(param_label, 0, param_index + 1, 1, 1)
+                gridLayout.addWidget(input_obj, 1, param_index + 1, 1, 1)
+                self._pm.method_param_widgets[method_name][param_name] = input_obj
             h_spacer = QtWidgets.QSpacerItem(20, 40, QtWidgets.QSizePolicy.Expanding,
                                              QtWidgets.QSizePolicy.Minimum)
             gridLayout.addItem(h_spacer, 1, param_index + 2, 1, 1)
@@ -1374,8 +1379,8 @@ class PulsedMeasurementGui(GUIBase):
         # Configure widgets
         self._pg.curr_ensemble_length_DSpinBox.setRange(0, np.inf)
         self._pg.curr_ensemble_length_DSpinBox.setDecimals(6, dynamic_precision=False)
-        self._pg.curr_ensemble_bins_SpinBox.setRange(0, 2**63-1)
-        self._pg.curr_ensemble_laserpulses_SpinBox.setRange(0, 2**31-1)
+        self._pg.curr_ensemble_bins_SpinBox.setRange(0, 2 ** 63 - 1)
+        self._pg.curr_ensemble_laserpulses_SpinBox.setRange(0, 2 ** 31 - 1)
 
         # initialize widgets
         self.generation_parameters_updated(self.pulsedmasterlogic().generation_parameters)
@@ -2303,17 +2308,17 @@ class PulsedMeasurementGui(GUIBase):
 
         # Configure the second pulse analysis plot display:
         self.second_plot_image = pg.PlotDataItem(pen=pg.mkPen(palette.c1, style=QtCore.Qt.DotLine),
-                                            style=QtCore.Qt.DotLine,
-                                            symbol='o',
-                                            symbolPen=palette.c1,
-                                            symbolBrush=palette.c1,
-                                            symbolSize=7)
+                                                 style=QtCore.Qt.DotLine,
+                                                 symbol='o',
+                                                 symbolPen=palette.c1,
+                                                 symbolBrush=palette.c1,
+                                                 symbolSize=7)
         self.second_plot_image2 = pg.PlotDataItem(pen=pg.mkPen(palette.c4, style=QtCore.Qt.DotLine),
-                                             style=QtCore.Qt.DotLine,
-                                             symbol='o',
-                                             symbolPen=palette.c4,
-                                             symbolBrush=palette.c4,
-                                             symbolSize=7)
+                                                  style=QtCore.Qt.DotLine,
+                                                  symbol='o',
+                                                  symbolPen=palette.c4,
+                                                  symbolBrush=palette.c4,
+                                                  symbolSize=7)
         self._pa.pulse_analysis_second_PlotWidget.addItem(self.second_plot_image)
         self._pa.pulse_analysis_second_PlotWidget.addItem(self.second_plot_image2)
         self._pa.pulse_analysis_second_PlotWidget.showGrid(x=True, y=True, alpha=0.8)
@@ -2606,7 +2611,7 @@ class PulsedMeasurementGui(GUIBase):
             return
         settings_dict = dict()
         settings_dict['record_length'] = self._pa.ana_param_record_length_DoubleSpinBox.value()
-        settings_dict['stop_sweep'] = self._pa.ana_param_stop_sweep_SpinBox.value()
+        settings_dict['stop_sweep'] = self._pa.ana_param_stop_sweep_SpinBox.value() #Pratik: stop sweep
         settings_dict['bin_width'] = float(self._pa.ana_param_fc_bins_ComboBox.currentText())
         self.pulsedmasterlogic().set_fast_counter_settings(settings_dict)
         return
@@ -2619,12 +2624,12 @@ class PulsedMeasurementGui(GUIBase):
         """
         # block signals
         self._pa.ana_param_record_length_DoubleSpinBox.blockSignals(True)
-        self._pa.ana_param_stop_sweep_SpinBox.blockSignals(True)
+        self._pa.ana_param_stop_sweep_SpinBox.blockSignals(True) #Pratik: stop sweep
         self._pa.ana_param_fc_bins_ComboBox.blockSignals(True)
         # set widgets
         if 'record_length' in settings_dict:
             self._pa.ana_param_record_length_DoubleSpinBox.setValue(settings_dict['record_length'])
-        if 'stop_sweep' in settings_dict:
+        if 'stop_sweep' in settings_dict: #Pratik: stop sweep
             self._pa.ana_param_stop_sweep_SpinBox.setValue(settings_dict['stop_sweep'])
         if 'bin_width' in settings_dict:
             index = self._pa.ana_param_fc_bins_ComboBox.findText(str(settings_dict['bin_width']))
@@ -2638,7 +2643,7 @@ class PulsedMeasurementGui(GUIBase):
 
         # unblock signals
         self._pa.ana_param_record_length_DoubleSpinBox.blockSignals(False)
-        self._pa.ana_param_stop_sweep_SpinBox.blockSignals(False)
+        self._pa.ana_param_stop_sweep_SpinBox.blockSignals(False) #Pratik: stop sweep
         self._pa.ana_param_fc_bins_ComboBox.blockSignals(False)
         return
 
@@ -2661,14 +2666,19 @@ class PulsedMeasurementGui(GUIBase):
             settings_dict['laser_ignore_list'].append(-1)
         settings_dict['alternating'] = self._pa.ana_param_alternating_CheckBox.isChecked()
         settings_dict['number_of_lasers'] = self._pa.ana_param_num_laser_pulse_SpinBox.value()
+        settings_dict['log_spacing'] = self._pa.ana_param_log_spacing_CheckBox.isChecked()
         vals_start = self._pa.ana_param_x_axis_start_ScienDSpinBox.value()
-        vals_incr = self._pa.ana_param_x_axis_inc_ScienDSpinBox.value()
+        vals_stop = self._pa.ana_param_x_axis_inc_ScienDSpinBox.value()
         num_of_ticks = max(1, settings_dict['number_of_lasers'] - len(
             settings_dict['laser_ignore_list']))
         if settings_dict['alternating'] and num_of_ticks > 1:
             num_of_ticks //= 2
-        controlled_variable = np.arange(num_of_ticks, dtype=float)
-        settings_dict['controlled_variable'] = controlled_variable * vals_incr + vals_start
+
+        if settings_dict['log_spacing']:
+            controlled_variable = np.logspace(vals_start, vals_stop, num_of_ticks)
+        else:
+            controlled_variable = np.linspace(vals_start, vals_stop, num_of_ticks)
+        settings_dict['controlled_variable'] = controlled_variable
 
         self.pulsedmasterlogic().set_measurement_settings(settings_dict)
         return
@@ -2686,6 +2696,7 @@ class PulsedMeasurementGui(GUIBase):
         self._pa.ana_param_num_laser_pulse_SpinBox.blockSignals(True)
         self._pa.ana_param_x_axis_start_ScienDSpinBox.blockSignals(True)
         self._pa.ana_param_x_axis_inc_ScienDSpinBox.blockSignals(True)
+        self._pa.ana_param_log_spacing_CheckBox.blockSignals(True)
         self._pa.ana_param_invoke_settings_CheckBox.blockSignals(True)
         self._pe.laserpulses_ComboBox.blockSignals(True)
         self._as.ana_param_x_axis_name_LineEdit.blockSignals(True)
@@ -2706,10 +2717,13 @@ class PulsedMeasurementGui(GUIBase):
         if 'laser_ignore_list' in settings_dict:
             self._pa.ana_param_ignore_first_CheckBox.setChecked(
                 0 in settings_dict['laser_ignore_list'])
-            if -1 in settings_dict['laser_ignore_list'] or self._pa.ana_param_num_laser_pulse_SpinBox.value() - 1 in settings_dict['laser_ignore_list']:
+            if -1 in settings_dict['laser_ignore_list'] or self._pa.ana_param_num_laser_pulse_SpinBox.value() - 1 in \
+                    settings_dict['laser_ignore_list']:
                 self._pa.ana_param_ignore_last_CheckBox.setChecked(True)
             else:
                 self._pa.ana_param_ignore_last_CheckBox.setChecked(False)
+        if 'log_spacing' in settings_dict:
+            self._pa.ana_param_log_spacing_CheckBox.setChecked(settings_dict['log_spacing'])
         if 'controlled_variable' in settings_dict:
             if len(settings_dict['controlled_variable']) < 1:
                 self._pa.ana_param_x_axis_start_ScienDSpinBox.setValue(0)
@@ -2723,8 +2737,7 @@ class PulsedMeasurementGui(GUIBase):
                 self._pa.ana_param_x_axis_start_ScienDSpinBox.setValue(
                     settings_dict['controlled_variable'][0])
                 self._pa.ana_param_x_axis_inc_ScienDSpinBox.setValue(
-                    settings_dict['controlled_variable'][1] - settings_dict['controlled_variable'][
-                        0])
+                    settings_dict['controlled_variable'][-1])
         if 'invoke_settings' in settings_dict:
             self._pa.ana_param_invoke_settings_CheckBox.setChecked(settings_dict['invoke_settings'])
             self.toggle_measurement_settings_editor(settings_dict['invoke_settings'])
@@ -2757,6 +2770,7 @@ class PulsedMeasurementGui(GUIBase):
         self._pa.ana_param_num_laser_pulse_SpinBox.blockSignals(False)
         self._pa.ana_param_x_axis_start_ScienDSpinBox.blockSignals(False)
         self._pa.ana_param_x_axis_inc_ScienDSpinBox.blockSignals(False)
+        self._pa.ana_param_log_spacing_CheckBox.blockSignals(False)
         self._pa.ana_param_invoke_settings_CheckBox.blockSignals(False)
         self._pe.laserpulses_ComboBox.blockSignals(False)
 
@@ -2803,8 +2817,9 @@ class PulsedMeasurementGui(GUIBase):
             self._pa.ana_param_x_axis_start_ScienDSpinBox.setEnabled(False)
             self._pa.ana_param_x_axis_inc_ScienDSpinBox.setEnabled(False)
             self._pa.ana_param_num_laser_pulse_SpinBox.setEnabled(False)
+            self._pa.ana_param_log_spacing_CheckBox.setEnabled(False)
             self._pa.ana_param_record_length_DoubleSpinBox.setEnabled(False)
-            self._pa.ana_param_stop_sweep_SpinBox.setEnabled(False)
+            self._pa.ana_param_stop_sweep_SpinBox.setEnabled(False) #Pratik: stop sweep
             self._pa.ana_param_ignore_first_CheckBox.setEnabled(False)
             self._pa.ana_param_ignore_last_CheckBox.setEnabled(False)
             self._pa.ana_param_alternating_CheckBox.setEnabled(False)
@@ -2812,8 +2827,9 @@ class PulsedMeasurementGui(GUIBase):
             self._pa.ana_param_x_axis_start_ScienDSpinBox.setEnabled(True)
             self._pa.ana_param_x_axis_inc_ScienDSpinBox.setEnabled(True)
             self._pa.ana_param_num_laser_pulse_SpinBox.setEnabled(True)
+            self._pa.ana_param_log_spacing_CheckBox.setEnabled(True)
             self._pa.ana_param_record_length_DoubleSpinBox.setEnabled(True)
-            self._pa.ana_param_stop_sweep_SpinBox.setEnabled(True)
+            self._pa.ana_param_stop_sweep_SpinBox.setEnabled(True) #Pratik: stop sweep
             self._pa.ana_param_ignore_first_CheckBox.setEnabled(True)
             self._pa.ana_param_ignore_last_CheckBox.setEnabled(True)
             self._pa.ana_param_alternating_CheckBox.setEnabled(True)
@@ -2906,7 +2922,7 @@ class PulsedMeasurementGui(GUIBase):
         self.measuring_error_image2 = pg.PlotDataItem(np.arange(10), np.zeros(10), pen=palette.c3)
         self._pe.measuring_error_PlotWidget.addItem(self.measuring_error_image)
         self._pe.measuring_error_PlotWidget.addItem(self.measuring_error_image2)
-        self._pe.measuring_error_PlotWidget.setLabel('left', 'measuring error',  units='arb.u.')
+        self._pe.measuring_error_PlotWidget.setLabel('left', 'measuring error', units='arb.u.')
 
         # Initialize widgets
         number_of_lasers = self.pulsedmasterlogic().measurement_settings['number_of_lasers']
@@ -3184,10 +3200,13 @@ class PulsedMeasurementGui(GUIBase):
             else:
                 y_data = self.pulsedmasterlogic().raw_data
         else:
-            if laser_index == 0:
-                y_data = np.sum(self.pulsedmasterlogic().laser_data, axis=0)
+            if len(self.pulsedmasterlogic().laser_data.shape) > 1:
+                if laser_index == 0:
+                    y_data = np.sum(self.pulsedmasterlogic().laser_data, axis=0)
+                else:
+                    y_data = self.pulsedmasterlogic().laser_data[laser_index - 1]
             else:
-                y_data = self.pulsedmasterlogic().laser_data[laser_index - 1]
+                y_data = self.pulsedmasterlogic().laser_data
 
         # Calculate the x-axis of the laser plot here
         bin_width = self.pulsedmasterlogic().fast_counter_settings['bin_width']

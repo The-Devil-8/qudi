@@ -237,67 +237,8 @@ class BasicPulseExtractor(PulseExtractorBase):
 
         # find the maximum laser length to use as size for the laser array
         laser_length = np.max(falling_ind - rising_ind)
-        if laser_length<=0:
-            laser_length=0
-            print('be careful, laser length was calculated negative')
+
         # initialize the empty output array
-       # print('numberofLaser')
-       # print(number_of_lasers)
-       # print(laser_length)
-        laser_arr = np.zeros((number_of_lasers, laser_length), dtype='int64')
-        # slice the detected laser pulses of the timetrace and save them in the
-        # output array according to the found rising edge
-        for i in range(number_of_lasers):
-            if rising_ind[i] + laser_length > count_data.size:
-                lenarr = count_data[rising_ind[i]:].size
-                laser_arr[i, 0:lenarr] = count_data[rising_ind[i]:]
-            else:
-                laser_arr[i] = count_data[rising_ind[i]:rising_ind[i] + laser_length]
-
-        return_dict['laser_counts_arr'] = laser_arr.astype('int64')
-        return_dict['laser_indices_rising'] = rising_ind
-        return_dict['laser_indices_falling'] = falling_ind
-        return return_dict
-
-    def ungated_conv_deriv_LQNO(self, count_data, conv_std_dev=20.0):
-
-        # Create return dictionary
-        return_dict = {'laser_counts_arr': np.empty(0, dtype='int64'),
-                       'laser_indices_rising': np.empty(0, dtype='int64'),
-                       'laser_indices_falling': np.empty(0, dtype='int64')}
-        number_of_lasers = self.measurement_settings.get('number_of_lasers')
-        if not isinstance(number_of_lasers, int):
-            return return_dict
-
-            Threshold = conv_std_dev
-            Counts_data = count_data.astype(float)
-
-            ka = 0
-            kaka = 0
-            firstedge = 1
-            secondedge = 0
-            rising_ind = np.zeros(number_of_lasers)
-            falling_ind = np.zeros(number_of_lasers)
-            for jjj in range(np.size(mydataAPD)):
-                if mydataAPD[jjj] > Threshold:
-                    if firstedge == 1:
-                        rising_ind[kaka] = jjj
-                        firstedge = 0
-                        secondedge = 1
-
-                if mydataAPD[jjj] < Threshold:
-                    if secondedge == 1:
-                        falling_ind[kaka] = jjj  ## -1
-                        firstedge = 1
-                        secondedge = 0
-                        kaka = kaka + 1
-                        if kaka == number_of_lasers:
-                            break
-                    ka = ka + 1
-            laser_length = np.max(falling_ind - rising_ind)
-            if laser_length <= 0:
-                laser_length = 0
-                print('be careful, laser length was calculated negative')
         laser_arr = np.zeros((number_of_lasers, laser_length), dtype='int64')
         # slice the detected laser pulses of the timetrace and save them in the
         # output array according to the found rising edge
@@ -391,7 +332,7 @@ class BasicPulseExtractor(PulseExtractorBase):
 
         return return_dict
 
-    def ungated_gated_conv_deriv(self, count_data, conv_std_dev=5.0, delay=5e-7, safety=2e-7):
+    def ungated_gated_conv_deriv(self, count_data, conv_std_dev=20.0, delay=5e-7, safety=2e-7):
         """
         Extracts the laser pulses in the ungated timetrace data using laser_start_indices and
         laser_length.
@@ -485,4 +426,41 @@ class BasicPulseExtractor(PulseExtractorBase):
                        'laser_indices_rising': np.arange(len(count_data)),
                        'laser_indices_falling': np.arange(len(count_data))}
 
+        return return_dict
+
+    def gated_NI_contrast_extractor(self, count_data):
+        """
+        This method does not actually extract anything. It just passes through the data from the hardware.
+        This function is useful, if the extraction is performed in hardware.
+
+        @param 2D numpy.ndarray count_data: the raw timetrace data from a gated fast counter
+                                        dim 0: gate number; dim 1: time bin
+
+        @return dict: The extracted laser pulses of the timetrace as well as the indices for rising
+                  and falling flanks.
+        """
+        c_on = count_data[2::4]  # post dark time readout  #JSS: added
+        c_off = count_data[0::4]  # polarisation readout   #JSS: added
+
+        try:
+            count_data = (c_on - c_off) / (c_on + c_off) + 1  # count_data[1::2] - count_data[::2] #JSS: added for contrast based measurement
+        except:
+            count_data = np.zeros(len(c_on)) + 1  # JSS: added
+            # Create return dictionary
+        return_dict = {'laser_counts_arr': np.array(count_data),
+                       'laser_indices_rising': np.arange(len(count_data)),
+                       'laser_indices_falling': np.arange(len(count_data))}
+        print("analyzer is gated_pass_through")
+        return return_dict
+
+    def gated_NI_laser_extractor(self, count_data):
+        Laser = np.diff(count_data)  # JSS: added
+        #print("laser diff:", Laser)
+        Laser = Laser[0::2]
+        #print("NI_laser_extractor:", Laser)
+        # Create return dictionary
+        return_dict = {'laser_counts_arr': np.array(Laser),
+                       'laser_indices_rising': np.arange(len(Laser)),
+                       'laser_indices_falling': np.arange(len(Laser))}
+        print("NI_laser_extractor")
         return return_dict

@@ -26,6 +26,7 @@ import pickle
 import time
 import copy
 import traceback
+import datetime
 
 from qtpy import QtCore
 from collections import OrderedDict
@@ -35,7 +36,7 @@ from core.configoption import ConfigOption
 from core.util.modules import get_main_dir, get_home_dir
 from core.util.helpers import natural_sort
 from core.util.network import netobtain
-from core.util.benchmark import BenchmarkTool ## CP from old QUDI
+from core.util.benchmark import BenchmarkTool
 from logic.generic_logic import GenericLogic
 from logic.pulsed.pulse_objects import PulseBlock, PulseBlockEnsemble, PulseSequence
 from logic.pulsed.pulse_objects import PulseObjectGenerator, PulseBlockElement
@@ -73,11 +74,8 @@ class SequenceGeneratorLogic(GenericLogic):
     _sampling_functions_import_path = ConfigOption(name='additional_sampling_functions_path',
                                                    default=None,
                                                    missing='nothing')
-
-    ####### CP from old QUDI
     _info_on_estimated_upload_time = ConfigOption(name='info_on_estimated_upload_time', default=60, missing='nothing')
     _disable_bench_prompt = ConfigOption(name='disable_benchmark_prompt', default=False, missing='nothing')
-    ######
 
     # status vars
     # Global parameters describing the channel usage and common parameters used during pulsed object
@@ -86,12 +84,13 @@ class SequenceGeneratorLogic(GenericLogic):
                                                             ('sync_channel', ''),
                                                             ('gate_channel', ''),
                                                             ('microwave_channel', 'a_ch1'),
-                                                            ('microwave_frequency', 2.789e9),
+                                                            ('microwave_frequency', 2.87e9),
                                                             ('microwave_amplitude', 0.0),
-                                                            ('rabi_period', 250e-9),
-                                                            ('laser_length', 3e-6),
-                                                            ('laser_delay', 500e-9),
-                                                            ('wait_time', 1e-6),
+                                                            ('rabi_period', 100e-9),
+                                                            ('laser_length', 150e-9),
+                                                            ('laser_delay', 850e-9),
+                                                            ('wait_time', 300e-9),
+                                                            ('polarization_time', 100e-6),
                                                             ('analog_trigger_voltage', 0.0)]))
 
     # The created pulse objects (PulseBlock, PulseBlockEnsemble, PulseSequence) are saved in
@@ -100,12 +99,10 @@ class SequenceGeneratorLogic(GenericLogic):
     # _saved_pulse_block_ensembles = StatusVar(default=OrderedDict())
     # _saved_pulse_sequences = StatusVar(default=OrderedDict())
 
-    ############ CP from old QUDI
     _benchmark_write = BenchmarkTool()
     _benchmark_write_state = StatusVar(representer=_benchmark_write.save, constructor=_benchmark_write.load_from_dict)
     _benchmark_load = BenchmarkTool()
     _benchmark_load_state = StatusVar(representer=_benchmark_load.save, constructor=_benchmark_load.load_from_dict)
-    ############
 
     # define signals
     sigBlockDictUpdated = QtCore.Signal(dict)
@@ -118,7 +115,7 @@ class SequenceGeneratorLogic(GenericLogic):
     sigSamplingSettingsUpdated = QtCore.Signal(dict)
     sigAvailableWaveformsUpdated = QtCore.Signal(list)
     sigAvailableSequencesUpdated = QtCore.Signal(list)
-    sigBenchmarkComplete = QtCore.Signal() ## CP from old QUDI
+    sigBenchmarkComplete = QtCore.Signal()
 
     sigPredefinedSequenceGenerated = QtCore.Signal(object, bool)
 
@@ -140,6 +137,8 @@ class SequenceGeneratorLogic(GenericLogic):
         self.__interleave = False  # Flag to indicate use of interleave
         # Set of available flags
         self.__flags = set()
+        # upload speed from benchmark
+        self.__upload_speed = np.nan
 
         # A flag indicating if sampling of a sequence is in progress
         self.__sequence_generation_in_progress = False
@@ -213,6 +212,7 @@ class SequenceGeneratorLogic(GenericLogic):
         self._pog = PulseObjectGenerator(sequencegeneratorlogic=self)
 
         self.__sequence_generation_in_progress = False
+
         return
 
     def on_deactivate(self):
@@ -293,6 +293,7 @@ class SequenceGeneratorLogic(GenericLogic):
         settings_dict['digital_levels'] = tuple(self.__digital_levels)
         settings_dict['interleave'] = bool(self.__interleave)
         settings_dict['flags'] = set(self.__flags)
+        settings_dict['upload_speed'] = float(self.__upload_speed)
         return settings_dict
 
     @pulse_generator_settings.setter
@@ -436,6 +437,8 @@ class SequenceGeneratorLogic(GenericLogic):
                 self.__interleave = self.pulsegenerator().set_interleave(
                     bool(settings_dict['interleave']))
 
+            self.__upload_speed = self.get_speed_write_load()
+
         elif len(kwargs) != 0 or isinstance(settings_dict, dict):
             # Only throw warning when arguments have been passed to this method
             self.log.warning('Pulse generator is not idle (status: {0:d}, "{1}").\n'
@@ -508,8 +511,18 @@ class SequenceGeneratorLogic(GenericLogic):
             if self.pulsegenerator().get_status()[0] > 0:
                 self.log.error('Can´t load a waveform, because pulser running. Switch off the pulser and try again.')
                 return -1
+
+            t_est_upload = self._benchmark_load.estimate_time(ensemble.sampling_information['number_of_samples'])
+            if t_est_upload > self._info_on_estimated_upload_time:
+                now = datetime.datetime.now()
+                self.log.info("Estimated finish of loading for long waveform:"
+                              " {0:%Y-%m-%d %H:%M:%S} ({1:d} s)".format(
+                    (now + datetime.timedelta(0, t_est_upload)), int(t_est_upload)))
+
             # Actually load the waveforms to the generic channels
+            start_time = time.perf_counter()
             self.pulsegenerator().load_waveform(ensemble.sampling_information['waveforms'])
+            self._benchmark_load.add_benchmark(time.perf_counter() - start_time, ensemble.sampling_information['number_of_samples'])
         else:
             self.log.error('Loading of PulseBlockEnsemble "{0}" failed.\n'
                            'It has not been generated yet.'.format(ensemble.name))
@@ -1752,15 +1765,9 @@ class SequenceGeneratorLogic(GenericLogic):
                 self.log.warn('Extending waveform {0} by {2} bins. New length {1}.'.format(
                     ensemble.name, ensemble_info['number_of_samples'], extension_samples))
 
-        # Non-sampling pulsers may have all they need to generate the pulse pattern at this point
-        if self.pulsegenerator().set_pulse_ensemble(ensemble.name, ensemble_info):
-            self.sigLoadedAssetUpdated.emit(*self.loaded_asset)
-            self.log.info("Successfully loaded pulse sequence '{}'".format(ensemble.name))
-            # let the rest of the loading continue so that measurement etc are set up
-
         # Calculate the byte size per sample.
         # One analog sample per channel is 4 bytes (np.float32) and one digital sample per channel
-        # is 1 byte (bool).
+        # is 1 byte (np.bool).
         bytes_per_sample = len(ensemble_info['analog_channels']) * 4 + len(
             ensemble_info['digital_channels'])
 
@@ -1777,7 +1784,7 @@ class SequenceGeneratorLogic(GenericLogic):
         if n_max_samples > 0. and ensemble_info['number_of_samples'] > n_max_samples:
             #self.log.error("Tried to write more samples ({:d}) than device supports ({:d}).".format(
             #    ensemble_info['number_of_samples'], n_max_samples))
-            print("warning: lot of samples acc. to Ulm's QUDI")      # John Imp: check this
+            print("warning: lot of samples acc. to QUDI")      # John Imp: check this
             #if not self.__sequence_generation_in_progress:
             #    self.module_state.unlock()
             #self.sigSampleEnsembleComplete.emit(None)
@@ -1800,6 +1807,13 @@ class SequenceGeneratorLogic(GenericLogic):
                 self.module_state.unlock()
             self.sigSampleEnsembleComplete.emit(None)
             return -1, list(), dict()
+
+        t_est_upload = self._benchmark_write.estimate_time(ensemble_info['number_of_samples'])
+        if t_est_upload > self._info_on_estimated_upload_time:
+            now = datetime.datetime.now()
+            self.log.info("Estimated finish of writing for long waveform:"
+                          " {0:%Y-%m-%d %H:%M:%S} ({1:d} s)".format(
+                (now + datetime.timedelta(0, t_est_upload)), int(t_est_upload)))
 
         # integer to keep track of the sampls already processed
         processed_samples = 0
@@ -1914,6 +1928,14 @@ class SequenceGeneratorLogic(GenericLogic):
 
         self.log.info('Time needed for sampling and writing PulseBlockEnsemble {0} to device: {1} sec'
                       ''.format(ensemble.name, int(np.rint(time.time() - start_time))))
+        self.log.debug('Estimated {:.3f} s from current estimated write speed {:.2f} MSa/s'
+                       ' from {} benchmarks'.format(
+            self._benchmark_write.estimate_time(ensemble_info['number_of_samples']),
+            self._benchmark_write.estimate_speed() / 1e6,
+            self._benchmark_write.n_benchmarks))
+
+        self._benchmark_write.add_benchmark(time.time() - start_time, ensemble_info['number_of_samples'])
+
         if ensemble_info['number_of_samples'] == 0:
             self.log.warning('Empty waveform (0 samples) created from PulseBlockEnsemble "{0}".'
                              ''.format(ensemble.name))
@@ -2102,7 +2124,6 @@ class SequenceGeneratorLogic(GenericLogic):
         self.sigAvailableSequencesUpdated.emit(self.sampled_sequences)
         return
 
-    # CP from old QUDI
     @QtCore.Slot()
     def run_pg_benchmark(self, t_goal=10):
         # lock module if it's not already locked (sequence sampling in progress)
@@ -2188,8 +2209,6 @@ class SequenceGeneratorLogic(GenericLogic):
             self.sigSampleEnsembleComplete.emit(None)
             self.sigLoadedAssetUpdated.emit(*self.loaded_asset)
 
-
-    ## CP from old QUDI
     def _sample_load_benchmark_chunk(self, n_samples, waveform_name='qudi_benchmark_chunk',
                                      persistent_datapoint=False, ignore_datapoint=False):
 
@@ -2226,15 +2245,76 @@ class SequenceGeneratorLogic(GenericLogic):
 
             return a_chs, d_chs
 
+        def _check_loaded(loaded_dict, should_load_list):
+            try:
+                is_substr = all([wavename in should_load_list[i] for i, (key, wavename) in enumerate(loaded_dict.items())])
+                is_empty = all([wavename == '' for (key, wavename) in loaded_dict.items()])
+            except Exception as e:
+                self.log.warning("{}".format(e))
+                return False
 
-    ## CP from old QUDI
+            return is_substr and not is_empty
+
+        n_samples = int(n_samples)
+        pg_chs_a, pg_chs_d = _get_largest_channel_config()
+        active_channels_saved = self.pulsegenerator().get_active_channels()
+        # benchmark the pg with all channels
+        self.pulsegenerator().set_active_channels({ch: True for ch in(pg_chs_a + pg_chs_d)})
+
+        analog_samples, digital_samples = {},{}
+
+        for chnl in pg_chs_a:
+            analog_samples[chnl] = np.random.random_sample(n_samples).astype('float32')
+        for chnl in pg_chs_d:
+            digital_samples[chnl] = np.random.randint(0, 2, n_samples, bool)
+
+        #loaded_waves_old = {key: val for key, val in self.pulsegenerator().get_loaded_assets()[0].items() if val != ''}
+
+        start_time = time.perf_counter()
+
+        self._delete_waveform_by_nametag(waveform_name)
+        written_samples, wfm_list = self.pulsegenerator().write_waveform(
+            name=waveform_name,
+            analog_samples=analog_samples,
+            digital_samples=digital_samples,
+            is_first_chunk=True,
+            is_last_chunk=True,
+            total_number_of_samples=n_samples)
+
+        if written_samples != n_samples:
+            self.log.error('Sampling of benchmark chunk failed. '
+                           'Write to device was unsuccessful.\nThe number of '
+                           'actually written samples ({:d}) does not match '
+                           'the number of samples staged to write ({:d}).'
+                           ''.format(written_samples,
+                                     n_samples))
+
+        if not ignore_datapoint:
+            self._benchmark_write.add_benchmark(time.perf_counter() - start_time, n_samples,
+                                                is_persistent=persistent_datapoint)
+
+        start_time = time.perf_counter()
+
+        loaded_dict = self.pulsegenerator().load_waveform(wfm_list)
+        if not ignore_datapoint:
+            self._benchmark_load.add_benchmark(time.perf_counter() - start_time, n_samples,
+                                                is_persistent=persistent_datapoint)
+
+        if not _check_loaded(loaded_dict, wfm_list):
+            self.log.warning("Loading of waves {} failed, still: {}".format(wfm_list, loaded_dict))
+
+        #if len(loaded_waves_old) > 0:
+        #    self.pulsegenerator().load_waveform(loaded_waves_old)
+        self._delete_waveform_by_nametag(waveform_name)
+        self.pulsegenerator().set_active_channels(active_channels_saved)
+        return 0, list(), dict()
+
     def has_valid_pg_benchmark(self):
         is_valid = not np.isnan(self.get_speed_write_load())
         ignore = self._disable_bench_prompt
         if ignore: return True
         return is_valid
 
-    ## CP from old QUDI
     def get_speed_write_load(self):
         """
         Get the estimated speed of the pulse generator for writing and loading a waveform.
