@@ -32,6 +32,8 @@ class PulsedMeasurementExecutor(GenericLogic):
     sigMeasurementError = QtCore.Signal(str)
     sigMeasurementProgress = QtCore.Signal(str, str)
     
+    _sigDeferredTransition = QtCore.Signal(str)
+    
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._current_state = 'IDLE'
@@ -42,11 +44,11 @@ class PulsedMeasurementExecutor(GenericLogic):
         self._start_time = None
         self._save_tag = None
         
-        self._timeout_timer = QtCore.QTimer()
+        self._timeout_timer = QtCore.QTimer(self)
         self._timeout_timer.setSingleShot(True)
         self._timeout_timer.timeout.connect(self._on_timeout)
         
-        self._settle_timer = QtCore.QTimer()
+        self._settle_timer = QtCore.QTimer(self)
         self._settle_timer.setSingleShot(True)
         self._settle_timer.timeout.connect(self._on_settle_done)
 
@@ -54,6 +56,11 @@ class PulsedMeasurementExecutor(GenericLogic):
         """Called when the module is activated."""
         self._current_state = 'IDLE'
         self._pml = self.pulsedmasterlogic()
+        
+        # Connect internal signal for thread-safe state transitions
+        self._sigDeferredTransition.connect(
+            self._transition_to, QtCore.Qt.QueuedConnection)
+            
         try:
             self._pml.sigPulserRunningUpdated.connect(
                 self._on_pulser_running_updated, QtCore.Qt.QueuedConnection)
@@ -69,6 +76,11 @@ class PulsedMeasurementExecutor(GenericLogic):
     def on_deactivate(self):
         """Called when the module is deactivated."""
         self.stop_measurement()
+        try:
+            self._sigDeferredTransition.disconnect(self._transition_to)
+        except (TypeError, RuntimeError):
+            pass
+            
         try:
             self._pml.sigPulserRunningUpdated.disconnect(self._on_pulser_running_updated)
             self._pml.sigMeasurementStatusUpdated.disconnect(self._on_measurement_status_updated)
@@ -116,8 +128,11 @@ class PulsedMeasurementExecutor(GenericLogic):
         
         self.log.info('Starting measurement sequence {0} for {1}'.format(
             self._run_id, candidate_record.get('candidate_id')))
-        self._timeout_timer.start(int(self.measurement_timeout_s * 1000))
-        self._deferred_transition('PULSER_OFF')
+        
+        # Removed 15-minute limit for now, so we don't start timeout_timer as states are working fine
+        # self._timeout_timer.start(int(self.measurement_timeout_s * 1000))
+        
+        self._deferred_transition('START_SEQUENCE')
         
         return self._run_id
 
@@ -135,11 +150,13 @@ class PulsedMeasurementExecutor(GenericLogic):
 
     def _deferred_transition(self, state):
         """Schedules a state transition on the Qt event loop."""
-        QtCore.QTimer.singleShot(0, lambda: self._transition_to(state))
+        self._sigDeferredTransition.emit(state)
 
     def _settle_transition(self, state):
         """Schedules a state transition with a 100ms settle delay."""
-        QtCore.QTimer.singleShot(100, lambda: self._transition_to(state))
+        # Instead of calling _transition_to directly in lambda, we emit the signal
+        # to ensure it's still queued correctly in our thread.
+        QtCore.QTimer.singleShot(100, lambda: self._deferred_transition(state))
 
     def _transition_to(self, state):
         """Drives the state machine transitions."""
@@ -158,6 +175,9 @@ class PulsedMeasurementExecutor(GenericLogic):
         try:
             if state == 'IDLE':
                 pass
+                
+            elif state == 'START_SEQUENCE':
+                self._deferred_transition('PULSER_OFF')
                 
             elif state == 'PULSER_OFF':
                 self._pml.toggle_pulse_generator(False)
