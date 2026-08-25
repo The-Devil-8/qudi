@@ -13,7 +13,7 @@ experiment execution:
   4. Micro-scanning (close scans) on each region.
   5. Cell region processing and POI extraction.
   6. POI deduplication (non-repetition radius filtering).
-  7. Dispatching candidates to NVCandidateVerifier (hybrid mode).
+  7. Dispatching candidates to NVCandidateVerifier.
   8. Running pulsed measurements (T1/ODMR) via PulsedMeasurementExecutor.
   9. Drift snapshot recording for calibration.
   10. Re-scanning ROI if more NVs are needed for a cell.
