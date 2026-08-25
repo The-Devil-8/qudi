@@ -25,6 +25,9 @@ from logic.generic_logic import GenericLogic
 from qtpy import QtCore
 import numpy as np
 
+#JSS: added the following for the sake of saving data from here
+import datetime
+from collections import OrderedDict
 
 class PulsedMasterLogic(GenericLogic):
     """
@@ -65,6 +68,7 @@ class PulsedMasterLogic(GenericLogic):
     sigTimerIntervalChanged = QtCore.Signal(float)
     sigAlternativeDataTypeChanged = QtCore.Signal(str)
     sigManuallyPullData = QtCore.Signal()
+    # sigLoadEnsembleComplete = QtCore.Signal(object) #JSS: for letting PMeasurement logic know
 
     # signals for master module (i.e. GUI) coming from PulsedMeasurementLogic
     sigMeasurementDataUpdated = QtCore.Signal()
@@ -132,7 +136,8 @@ class PulsedMasterLogic(GenericLogic):
                             'measurement_running': False,
                             'microwave_running': False,
                             'predefined_generation_busy': False,
-                            'fitting_busy': False}
+                            'fitting_busy': False,
+                            'benchmark_busy': False}
 
         # Connect signals controlling PulsedMeasurementLogic
         self.sigDoFit.connect(
@@ -161,6 +166,11 @@ class PulsedMasterLogic(GenericLogic):
             self.pulsedmeasurementlogic().set_alternative_data_type, QtCore.Qt.QueuedConnection)
         self.sigManuallyPullData.connect(
             self.pulsedmeasurementlogic().manually_pull_data, QtCore.Qt.QueuedConnection)
+        try:
+            self.sigLoadedAssetUpdated.connect( #JSS: letting pmlogic know about loading
+                 self.pulsedmeasurementlogic()._on_load_ensemble_complete, QtCore.Qt.QueuedConnection)
+        except:
+            self.log.debug("pulsedmeasurementlogic does not implement dynamic-ensemble-loading")
 
         # Connect signals coming from PulsedMeasurementLogic
         self.pulsedmeasurementlogic().sigMeasurementDataUpdated.connect(
@@ -185,6 +195,11 @@ class PulsedMasterLogic(GenericLogic):
             self.sigAnalysisSettingsUpdated, QtCore.Qt.QueuedConnection)
         self.pulsedmeasurementlogic().sigExtractionSettingsUpdated.connect(
             self.sigExtractionSettingsUpdated, QtCore.Qt.QueuedConnection)
+        try:
+            self.pulsedmeasurementlogic().sigSampleEnsembleRequest.connect(
+                self.sample_ensemble) #for dynamic pulse ensemble loading
+        except:
+            self.log.debug("pulsedmeasurementlogic does not implement dynamic-ensemble-loading")
 
         # Connect signals controlling SequenceGeneratorLogic
         self.sigSavePulseBlock.connect(
@@ -239,6 +254,9 @@ class PulsedMasterLogic(GenericLogic):
             self.sample_sequence_finished, QtCore.Qt.QueuedConnection)
         self.sequencegeneratorlogic().sigLoadedAssetUpdated.connect(
             self.loaded_asset_updated, QtCore.Qt.QueuedConnection)
+        self.sequencegeneratorlogic().sigBenchmarkComplete.connect(
+            self.benchmark_completed, QtCore.Qt.QueuedConnection)
+
         return
 
     def on_deactivate(self):
@@ -273,6 +291,10 @@ class PulsedMasterLogic(GenericLogic):
         self.pulsedmeasurementlogic().sigMeasurementSettingsUpdated.disconnect()
         self.pulsedmeasurementlogic().sigAnalysisSettingsUpdated.disconnect()
         self.pulsedmeasurementlogic().sigExtractionSettingsUpdated.disconnect()
+        try:
+            self.pulsedmeasurementlogic().sigSampleEnsembleRequest.disconnect()
+        except:
+            pass
 
         # Disconnect signals controlling SequenceGeneratorLogic
         self.sigSavePulseBlock.disconnect()
@@ -301,6 +323,7 @@ class PulsedMasterLogic(GenericLogic):
         self.sequencegeneratorlogic().sigSampleEnsembleComplete.disconnect()
         self.sequencegeneratorlogic().sigSampleSequenceComplete.disconnect()
         self.sequencegeneratorlogic().sigLoadedAssetUpdated.disconnect()
+        self.sequencegeneratorlogic().sigBenchmarkComplete.disconnect()
         return
 
     #######################################################################
@@ -578,8 +601,12 @@ class PulsedMasterLogic(GenericLogic):
         self.sigFitUpdated.emit(fit_name, fit_data, fit_result, use_alternative_data)
         return
 
-    def save_measurement_data(self, tag=None, with_error=True, save_laser_pulses=True, save_pulsed_measurement=True,
-                              save_figure=True):
+    @QtCore.Slot()
+    def benchmark_completed(self):
+        self.status_dict['benchmark_busy'] = False
+
+    def save_measurement_data(self, tag=None, with_error=True, save_laser_pulses=False, save_pulsed_measurement=True,
+                              save_figure=True, save_photon_rate=True, save_raw_timetrace=False):
         """
         Prepare data to be saved and create a proper plot of the data.
         This is just handed over to the measurement logic.
@@ -593,7 +620,70 @@ class PulsedMasterLogic(GenericLogic):
         @return str: filepath where data were saved
         """
         self.pulsedmeasurementlogic().save_measurement_data(tag, with_error, save_laser_pulses, save_pulsed_measurement,
-                                                            save_figure)
+                                                            save_figure, save_photon_rate, save_raw_timetrace)
+
+        # JSS: following added to save photon rate
+        if not save_photon_rate:
+            return
+        folder_name = 'PulsedMeasurement'
+        if "\\" in tag:
+            folder_name, tag = tag.split("\\", 1)
+        else:
+            folder_name = ""
+        filepath = self.pulsedmeasurementlogic().savelogic().get_path_for_module(folder_name)
+        timestamp = datetime.datetime.now()
+
+        #######################################################################
+        ### Save photon rate for c_on anf c_off from extracted laser pulses ###
+        ####           (along with the contrast side by side)            ######
+        #######################################################################
+
+        #JSS: pending the following might throw an error if any real fastcounter (Timetagger) is run
+        if self.pulsedmeasurementlogic().fastcounter()._contrast_based == False:
+            return
+
+        if save_photon_rate:
+            if tag:
+                filelabel = tag
+            else:
+                filelabel = ''
+
+            # use the data dict already created in above pulsedmeasurementlogic function:
+            data_contrast = self.pulsedmeasurementlogic().data_contrast
+            header = self.pulsedmeasurementlogic().header_str
+            data = OrderedDict()
+
+            #print("self.laser_data inside save data", self.pulsedmeasurementlogic().laser_data)
+            laser_trace = self.pulsedmeasurementlogic().laser_data
+            number_of_gates = self.fast_counter_settings['number_of_gates']
+            number_of_gates *= 2
+            ACQtime = int(len(laser_trace) / number_of_gates)
+            laser_trace = laser_trace.reshape(ACQtime, number_of_gates)
+            laser_trace = np.sum(laser_trace, axis=0)
+
+            readout_time = self.generation_parameters['laser_length']
+            readout_time *= self.fast_counter_settings['record_length']
+
+            photon_rate = laser_trace/readout_time/1000 #photon rate (k/s)
+
+            c_off = photon_rate[::2].reshape(-1, 1)
+            c_on = photon_rate[1::2].reshape(-1, 1)
+            print("c_on:", c_on, "c_off:", c_off)
+            header += '\tc_on(k/s)' + '\tc_off(k/s)'
+            data_contrast = np.concatenate((data_contrast, c_on, c_off), axis=1)
+            data[header] = data_contrast
+
+            # write the parameters:
+            parameters = self.pulsedmeasurementlogic().parameters
+
+            self.pulsedmeasurementlogic().savelogic().save_data(data,
+                                       timestamp=timestamp,
+                                       parameters=parameters,
+                                       filepath=filepath,
+                                       filelabel=filelabel,
+                                       filetype='text',
+                                       fmt='%.15e',
+                                       delimiter='\t')
         return
 
     #######################################################################
@@ -731,10 +821,10 @@ class PulsedMasterLogic(GenericLogic):
             self.log.error('Loading of a different asset already in progress.\n'
                            'PulseBlockEnsemble "{0}" not loaded!'.format(ensemble_name))
             self.loaded_asset_updated(*self.loaded_asset)
-        elif self.status_dict['measurement_running']:
-            self.log.error('Loading of ensemble not possible while measurement is running.\n'
-                           'PulseBlockEnsemble "{0}" not loaded!'.format(ensemble_name))
-            self.loaded_asset_updated(*self.loaded_asset)
+        # elif self.status_dict['measurement_running']: #  JSS: imp! Check this!! pending:
+        #     self.log.error('Loading of ensemble not possible while measurement is running.\n'
+        #                    'PulseBlockEnsemble "{0}" not loaded!'.format(ensemble_name))
+        #     self.loaded_asset_updated(*self.loaded_asset)
         else:
             self.status_dict['loading_busy'] = True
             if self.status_dict['pulser_running']:
@@ -774,6 +864,7 @@ class PulsedMasterLogic(GenericLogic):
         self.status_dict['sampload_busy'] = False
         self.status_dict['loading_busy'] = False
         self.sigLoadedAssetUpdated.emit(asset_name, asset_type)
+        #self.sigLoadEnsembleComplete.emit(self.loaded_asset[0]) #JSS: alert pmlogic about loading
         # Transfer sequence information from PulseBlockEnsemble or PulseSequence to
         # PulsedMeasurementLogic to be able to invoke measurement settings from them
         if not asset_type:
@@ -786,7 +877,7 @@ class PulsedMasterLogic(GenericLogic):
             object_instance = self.saved_pulse_sequences.get(asset_name)
         else:
             object_instance = None
-
+        self.log.debug('asset_type: '+str(asset_type)+', asset_name: '+str(asset_name)+', object_instance: '+str(object_instance))
         if object_instance is None:
             self.pulsedmeasurementlogic().sampling_information = dict()
             self.pulsedmeasurementlogic().measurement_information = dict()
@@ -903,7 +994,6 @@ class PulsedMasterLogic(GenericLogic):
                 self.sigDeleteSequence.emit(sequence_name)
         return
 
-    # CP from old QUDI
     @QtCore.Slot()
     def refresh_pulse_generator_settings(self):
         """

@@ -20,19 +20,21 @@ Copyright (c) the Qudi Developers. See the COPYRIGHT.txt file at the
 top-level directory of this distribution and at <https://github.com/Ulm-IQO/qudi/>
 """
 
-
 import os
 import importlib
 import sys
 import inspect
 import copy
 import logging
-import numpy as np  # CP from old QUDI
+import numpy as np
 from collections import OrderedDict
-from enum import Enum  # CP from old QUDI
+from enum import Enum
+
+##############################################################
+# Helper class for everything that need dynamical decoupling #
+##############################################################
 
 
-# CP from old QUDI
 class DDMethods(Enum):
 
     # define a function to nest the phases of sequence 1 into sequence 2
@@ -95,7 +97,6 @@ class DDMethods(Enum):
     @property
     def phases(self):
         return np.array(self._phases)
-
 
 class SamplingBase:
     """
@@ -202,3 +203,6 @@ class SamplingFunctions:
         if inspect.isclass(obj):
             return SamplingBase in inspect.getmro(obj) and object not in obj.__bases__
         return False
+
+
+
