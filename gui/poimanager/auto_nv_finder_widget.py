@@ -44,11 +44,11 @@ class CandidateMarker(pg.EllipseROI):
     """
 
     STATUS_PENS = {
-        'pending':    {'color': 'FF0', 'width': 2},    # Yellow
-        'optimizing': {'color': '00F', 'width': 3},    # Blue (thicker)
-        'accepted':   {'color': '0F0', 'width': 2},    # Green
-        'rejected':   {'color': 'F00', 'width': 1},    # Red (thinner)
-        'skipped':    {'color': '888', 'width': 1},    # Gray
+        'pending':    {'color': '#FFFF00', 'width': 2},    # Yellow
+        'optimizing': {'color': '#0000FF', 'width': 3},    # Blue (thicker)
+        'accepted':   {'color': '#00FF00', 'width': 2},    # Green
+        'rejected':   {'color': '#FF0000', 'width': 1},    # Red (thinner)
+        'skipped':    {'color': '#888888', 'width': 1},    # Gray
     }
 
     def __init__(self, position, radius, name='', status='pending',
@@ -264,7 +264,7 @@ class AutoNVFinderWidget(QtWidgets.QDockWidget):
         if 0 <= row < len(self._candidate_markers):
             marker = self._candidate_markers[row]
             if marker is not None:
-                marker.setPen({'color': 'FFF', 'width': 3})
+                marker.setPen({'color': '#FFFFFF', 'width': 3})
 
     # =========================================================================
     #                   LOGIC → GUI HANDLERS

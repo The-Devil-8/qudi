@@ -157,6 +157,7 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
         self._measurement_results = []
 
     def on_activate(self):
+        print('[MultiScaleAutoNVFinderLogic] on_activate START')
         self._set_state('idle')
         self._stop_requested = False
 
@@ -166,6 +167,7 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
         # accumulate duplicate handlers or leave stale connections on error
         # paths.
         # ------------------------------------------------------------------
+        print('[MultiScaleAutoNVFinderLogic] Connecting verifier signals...')
         verifier = self.nvcandidateverifier()
         verifier.sigCandidateAccepted.connect(
             self._on_candidate_accepted, QtCore.Qt.QueuedConnection)
@@ -174,15 +176,21 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
         verifier.sigVerificationFinished.connect(
             self._on_verification_batch_complete,
             QtCore.Qt.QueuedConnection)
+        print('[MultiScaleAutoNVFinderLogic] Verifier signals connected OK')
 
+        print('[MultiScaleAutoNVFinderLogic] Connecting executor signals...')
         executor = self._get_executor()
         if executor is not None:
             executor.sigMeasurementComplete.connect(
                 self._on_measurement_complete, QtCore.Qt.QueuedConnection)
             executor.sigMeasurementError.connect(
                 self._on_measurement_error, QtCore.Qt.QueuedConnection)
+            print('[MultiScaleAutoNVFinderLogic] Executor signals connected OK')
+        else:
+            print('[MultiScaleAutoNVFinderLogic] No executor available (None)')
 
         self.log.info('MultiScaleAutoNVFinderLogic activated.')
+        print('[MultiScaleAutoNVFinderLogic] on_activate COMPLETE')
 
     def on_deactivate(self):
         if self._state != 'idle':
