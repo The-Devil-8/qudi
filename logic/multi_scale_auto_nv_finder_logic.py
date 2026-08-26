@@ -192,6 +192,9 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
         self.log.info('MultiScaleAutoNVFinderLogic activated.')
         print('[MultiScaleAutoNVFinderLogic] on_activate COMPLETE')
 
+        #for adding poi b4 measurement
+        self._poimanagerlogic = self.poimanagerlogic()
+
     def on_deactivate(self):
         if self._state != 'idle':
             self.stop_multi_scale_find()
@@ -739,6 +742,8 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
 
         candidate_id = accepted_record.get('candidate_id', 'unknown')
         position = accepted_record.get('accepted_position_m', [0, 0, 0])
+
+        self._poimanagerlogic.add_poi(position)
 
         self._log('Candidate {0} optically verified at [{1:.2f}, '
                   '{2:.2f}, {3:.2f}] um.'.format(
