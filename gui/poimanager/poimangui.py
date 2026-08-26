@@ -48,8 +48,8 @@ class PoiMarker(pg.EllipseROI):
     Have a look at:
     http://www.pyqtgraph.org/documentation/graphicsItems/roi.html
     """
-    default_pen = {'color': 'F0F', 'width': 2}
-    select_pen = {'color': 'FFF', 'width': 2}
+    default_pen = {'color': '#FF00FF', 'width': 2}
+    select_pen = {'color': '#FFFFFF', 'width': 2}
 
     sigPoiSelected = QtCore.Signal(str)
 
@@ -278,6 +278,7 @@ class PoiManagerGui(GUIBase):
 
         This method executes the init methods for each of the GUIs.
         """
+        print('[POIManagerGui] on_activate START')
         self._markers = dict()
 
         self._mw = PoiManagerMainWindow()
@@ -290,15 +291,20 @@ class PoiManagerGui(GUIBase):
         self._mw.poi_nametag_LineEdit.setValidator(NameValidator(empty_allowed=True))
 
         # Initialize plots
+        print('[POIManagerGui] Initializing plots...')
         self.__init_roi_scan_image()
         self.__init_roi_history_plot()
 
         # Initialize refocus timer
+        print('[POIManagerGui] Initializing refocus timer...')
         self.update_refocus_timer(self.poimanagerlogic().module_state() == 'locked',
                                   self.poimanagerlogic().refocus_period,
                                   self.poimanagerlogic().refocus_period)
         # Initialize POIs
+        print('[POIManagerGui] Updating POIs (count={0})...'.format(
+            len(self.poimanagerlogic().poi_positions)))
         self._update_pois(self.poimanagerlogic().poi_positions)
+        print('[POIManagerGui] POIs updated OK')
         # Initialize ROI name
         self._update_roi_name(self.poimanagerlogic().roi_name)
         # Initialize POI nametag
@@ -314,14 +320,19 @@ class PoiManagerGui(GUIBase):
                                                  slot=self.mouse_moved_callback)
 
         # Connect signals
+        print('[POIManagerGui] Connecting signals...')
         self.__connect_internal_signals()
         self.__connect_update_signals_from_logic()
         self.__connect_control_signals_to_logic()
+        print('[POIManagerGui] Signals connected OK')
 
         # Initialize Multi Scale Auto NV Finder dock widget (if logic module is loaded)
+        print('[POIManagerGui] Initializing Multi-Scale Auto NV Finder dock...')
         self.__init_multi_scale_auto_nv_finder_dock()
+        print('[POIManagerGui] Multi-Scale dock init complete')
 
         self._mw.show()
+        print('[POIManagerGui] on_activate COMPLETE — window shown')
         return
 
     def on_deactivate(self):
@@ -380,29 +391,40 @@ class PoiManagerGui(GUIBase):
         
         Only creates the widget if the MultiScaleAutoNVFinderLogic connector is available.
         """
+        import traceback
         try:
             if not self.multi_scale_auto_nv_finder.is_connected:
+                print('[POIManagerGui] MultiScaleAutoNVFinderLogic NOT connected — skipping dock.')
                 self.log.info('MultiScaleAutoNVFinderLogic not connected — '
                               'Multi-Scale Auto NV Finder dock widget will not be created.')
                 return
-        except Exception:
+            else:
+                print('[POIManagerGui] MultiScaleAutoNVFinderLogic IS connected.')
+        except Exception as e:
+            print('[POIManagerGui] MultiScaleAutoNVFinderLogic connector not available: {0}'.format(e))
             self.log.info('MultiScaleAutoNVFinderLogic connector not available — '
                           'Multi-Scale Auto NV Finder dock widget will not be created.')
             return
 
         try:
+            print('[POIManagerGui] Importing MultiScaleAutoNVFinderWidget...')
             from gui.poimanager.multi_scale_auto_nv_finder_widget import MultiScaleAutoNVFinderWidget
+            print('[POIManagerGui] Importing CellProcessingViewerWidget...')
             from gui.poimanager.cell_processing_viewer_widget import CellProcessingViewerWidget, MacroQueueWindow
 
             view_widget = self._mw.roi_map_ViewWidget
 
+            print('[POIManagerGui] Creating MultiScaleAutoNVFinderWidget...')
             self._multi_scale_auto_nv_finder_widget = MultiScaleAutoNVFinderWidget(
                 multi_scale_logic=self.multi_scale_auto_nv_finder(),
                 view_widget=view_widget,
                 parent=self._mw
             )
+            print('[POIManagerGui] MultiScaleAutoNVFinderWidget created OK')
             
+            print('[POIManagerGui] Creating CellProcessingViewerWidget...')
             self._cell_processing_viewer_widget = CellProcessingViewerWidget(parent=self._mw)
+            print('[POIManagerGui] CellProcessingViewerWidget created OK')
 
             self._mw.addDockWidget(
                 QtCore.Qt.BottomDockWidgetArea,
@@ -412,12 +434,16 @@ class PoiManagerGui(GUIBase):
                 QtCore.Qt.BottomDockWidgetArea,
                 self._cell_processing_viewer_widget)
 
+            print('[POIManagerGui] Both dock widgets added to main window OK')
             self.log.info('Multi-Scale Auto NV Finder dock widget initialized.')
             
             # Connect the signal for the popups and the cell viewer
             self.multi_scale_auto_nv_finder().sigVisualUpdate.connect(self._on_multi_scale_visual_update)
+            print('[POIManagerGui] sigVisualUpdate connected OK')
             
         except Exception as e:
+            print('[POIManagerGui] FAILED to init Multi-Scale dock: {0}'.format(e))
+            traceback.print_exc()
             self.log.warning('Failed to initialize Multi-Scale Auto NV Finder dock: {0}'.format(e))
             self._multi_scale_auto_nv_finder_widget = None
             self._cell_processing_viewer_widget = None

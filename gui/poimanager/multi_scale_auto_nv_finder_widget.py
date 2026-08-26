@@ -69,15 +69,22 @@ class MultiScaleAutoNVFinderWidget(QtWidgets.QDockWidget):
     """Dock widget for controlling and visualizing the multi-scale finder."""
 
     def __init__(self, multi_scale_logic, view_widget, parent=None):
+        print('[MultiScaleAutoNVFinderWidget] __init__ START')
         super().__init__('Multi-Scale Auto NV Finder', parent)
 
         self._logic = multi_scale_logic
         self._view_widget = view_widget
         self._region_markers = {}
 
+        print('[MultiScaleAutoNVFinderWidget] Setting up UI...')
         self._setup_ui()
+        print('[MultiScaleAutoNVFinderWidget] UI setup OK')
+        print('[MultiScaleAutoNVFinderWidget] Syncing params from logic...')
         self._sync_params_from_logic()
+        print('[MultiScaleAutoNVFinderWidget] Params synced OK')
+        print('[MultiScaleAutoNVFinderWidget] Connecting signals...')
         self._connect_signals()
+        print('[MultiScaleAutoNVFinderWidget] __init__ COMPLETE')
 
     def _setup_ui(self):
         self.main_widget = QtWidgets.QWidget()
