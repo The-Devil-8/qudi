@@ -98,6 +98,10 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
     poi_non_repetition_radius_m = StatusVar(
         'poi_non_repetition_radius_m', 1.0e-6)
     enable_pulsed_measurement = StatusVar('enable_pulsed_measurement', False)
+    min_fluorescence_counts_per_s = StatusVar(
+        'min_fluorescence_counts_per_s', 50e3)    # 50 kc/s
+    max_fluorescence_counts_per_s = StatusVar(
+        'max_fluorescence_counts_per_s', 8e6)     # 8 Mc/s
     max_rescans_per_cell = StatusVar('max_rescans_per_cell', 3)
 
     # =====================================================================
@@ -715,6 +719,11 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
         # complete the full optical check for this one candidate before
         # sigVerificationFinished fires.
         verifier = self.nvcandidateverifier()
+        # Push fluorescence count rate gates from orchestrator to verifier
+        verifier.min_fluorescence_counts_per_s = float(
+            self._val(self.min_fluorescence_counts_per_s, 50e3))
+        verifier.max_fluorescence_counts_per_s = float(
+            self._val(self.max_fluorescence_counts_per_s, 8e6))
         verifier.verify_batch(
             [candidate],
             run_context={
