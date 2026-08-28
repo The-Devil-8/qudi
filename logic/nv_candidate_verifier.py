@@ -144,8 +144,26 @@ def xy_distance_m(first_position, second_position):
 
 
 def analysis_gate_failures(analysis, min_r_squared=0.6,
-                           sigma_range_m=(0.05e-6, 0.4e-6)):
-    """Return failed optical gates for one bounded XY analysis record."""
+                           sigma_range_m=(0.05e-6, 0.4e-6),
+                           min_fluorescence_cps=None,
+                           max_fluorescence_cps=None):
+    """Return failed optical gates for one bounded XY analysis record.
+
+    Parameters
+    ----------
+    analysis : dict
+        An optimizer2 XY analysis record containing fit results.
+    min_r_squared : float
+        Minimum acceptable R² goodness of fit.
+    sigma_range_m : tuple of float
+        (min_sigma, max_sigma) acceptable PSF widths in metres.
+    min_fluorescence_cps : float or None
+        Minimum acceptable peak fluorescence in counts/s
+        (amplitude + offset).  ``None`` disables this gate.
+    max_fluorescence_cps : float or None
+        Maximum acceptable peak fluorescence in counts/s
+        (amplitude + offset).  ``None`` disables this gate.
+    """
     failures = []
     if not analysis or not bool(analysis.get('success')):
         failures.append('xy_fit_failed')
@@ -181,13 +199,32 @@ def analysis_gate_failures(analysis, min_r_squared=0.6,
         center_x, center_y = [float(value) for value in position[:2]]
         if not (x_min <= center_x <= x_max and y_min <= center_y <= y_max):
             failures.append('outside_sampled_support')
+    # --- Fluorescence count rate gate ---
+    if min_fluorescence_cps is not None or max_fluorescence_cps is not None:
+        amplitude = analysis.get('amplitude')
+        offset = analysis.get('offset')
+        if amplitude is not None and offset is not None:
+            try:
+                peak_cps = float(amplitude) + float(offset)
+            except (TypeError, ValueError):
+                peak_cps = None
+            if peak_cps is not None and np.isfinite(peak_cps):
+                if (min_fluorescence_cps is not None and
+                        peak_cps < float(min_fluorescence_cps)):
+                    failures.append('fluorescence_too_low')
+                if (max_fluorescence_cps is not None and
+                        peak_cps > float(max_fluorescence_cps)):
+                    failures.append('fluorescence_too_high')
     return failures
 
 
 def is_worthy_analysis(analysis, min_r_squared=0.6,
-                       sigma_range_m=(0.05e-6, 0.4e-6)):
+                       sigma_range_m=(0.05e-6, 0.4e-6),
+                       min_fluorescence_cps=None,
+                       max_fluorescence_cps=None):
     """Return whether an XY analysis passes the configured worthy gates."""
-    return not analysis_gate_failures(analysis, min_r_squared, sigma_range_m)
+    return not analysis_gate_failures(analysis, min_r_squared, sigma_range_m,
+                                     min_fluorescence_cps, max_fluorescence_cps)
 
 
 def analyse_legacy_xy_scan(xy_refocus_image, x_values, y_values, seed_position_m,
@@ -331,6 +368,10 @@ class NVCandidateVerifier(GenericLogic):
     attempt_timeout_s = StatusVar('attempt_timeout_s', 90.0)
     timeout_cleanup_s = StatusVar('timeout_cleanup_s', 10.0)
     audit_subdirectory = StatusVar('audit_subdirectory', 'NVCandidateVerifier')
+    min_fluorescence_counts_per_s = StatusVar(
+        'min_fluorescence_counts_per_s', 50e3)    # 50 kc/s
+    max_fluorescence_counts_per_s = StatusVar(
+        'max_fluorescence_counts_per_s', 8e6)     # 8 Mc/s
 
     sigVerificationProgress = QtCore.Signal(str, str, int, int)
     sigCandidateVerificationUpdated = QtCore.Signal(object)
@@ -493,6 +534,10 @@ class NVCandidateVerifier(GenericLogic):
             'auto_register_poi': bool(self.auto_register_poi),
             'attempt_timeout_s': float(self.attempt_timeout_s),
             'timeout_cleanup_s': float(self.timeout_cleanup_s),
+            'min_fluorescence_counts_per_s': float(
+                self.min_fluorescence_counts_per_s),
+            'max_fluorescence_counts_per_s': float(
+                self.max_fluorescence_counts_per_s),
         }
 
     def _sigma_range_m(self):
@@ -664,7 +709,9 @@ class NVCandidateVerifier(GenericLogic):
             'legacy_return_position_m': optimal_position,
         }
         gate_failures = analysis_gate_failures(
-            analysis, self.worthy_min_xy_r_squared, self._sigma_range_m())
+            analysis, self.worthy_min_xy_r_squared, self._sigma_range_m(),
+            min_fluorescence_cps=float(self.min_fluorescence_counts_per_s),
+            max_fluorescence_cps=float(self.max_fluorescence_counts_per_s))
         poi_gaussian_distance = xy_distance_m(optimal_position,
                                              analysis.get('position_m'))
         final_tolerance = float(self.poi_gaussian_center_tolerance_m)

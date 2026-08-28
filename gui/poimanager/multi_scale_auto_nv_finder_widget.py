@@ -268,6 +268,34 @@ class MultiScaleAutoNVFinderWidget(QtWidgets.QDockWidget):
         loop_form.addRow('Laser pulse ensemble:', self.laser_pulse_name_edit)
 
         settings_layout.addWidget(loop_group)
+
+        # Fluorescence Gates Group
+        fluor_group = QtWidgets.QGroupBox("Fluorescence Gates")
+        fluor_form = QtWidgets.QFormLayout(fluor_group)
+
+        self.min_fluorescence_spinbox = QtWidgets.QDoubleSpinBox()
+        self.min_fluorescence_spinbox.setRange(0.0, 1000.0)
+        self.min_fluorescence_spinbox.setDecimals(1)
+        self.min_fluorescence_spinbox.setSingleStep(10.0)
+        self.min_fluorescence_spinbox.setSuffix(' kc/s')
+        self.min_fluorescence_spinbox.setToolTip(
+            'Minimum peak fluorescence (amplitude + offset) to accept an NV '
+            'candidate.  Candidates below this are rejected as background '
+            'artifacts.')
+        fluor_form.addRow('Min fluorescence:', self.min_fluorescence_spinbox)
+
+        self.max_fluorescence_spinbox = QtWidgets.QDoubleSpinBox()
+        self.max_fluorescence_spinbox.setRange(0.1, 100.0)
+        self.max_fluorescence_spinbox.setDecimals(1)
+        self.max_fluorescence_spinbox.setSingleStep(0.5)
+        self.max_fluorescence_spinbox.setSuffix(' Mc/s')
+        self.max_fluorescence_spinbox.setToolTip(
+            'Maximum peak fluorescence (amplitude + offset) to accept an NV '
+            'candidate.  Candidates above this are rejected as macro-cluster '
+            'fragments.')
+        fluor_form.addRow('Max fluorescence:', self.max_fluorescence_spinbox)
+
+        settings_layout.addWidget(fluor_group)
         settings_layout.addStretch()
 
         settings_scroll.setWidget(settings_container)
@@ -289,6 +317,11 @@ class MultiScaleAutoNVFinderWidget(QtWidgets.QDockWidget):
         self.measurement_name_edit.setText(str(val(self._logic.measurement_ensemble_name, '')))
         self.laser_pulse_name_edit.setText(str(val(self._logic.laser_pulse_ensemble_name, '')))
         self.poi_radius_spinbox.setValue(float(val(self._logic.poi_non_repetition_radius_m, 1.0e-6)) * 1e6)
+        # Fluorescence gates (logic stores counts/s, GUI shows kc/s and Mc/s)
+        self.min_fluorescence_spinbox.setValue(
+            float(val(self._logic.min_fluorescence_counts_per_s, 50e3)) / 1e3)
+        self.max_fluorescence_spinbox.setValue(
+            float(val(self._logic.max_fluorescence_counts_per_s, 8e6)) / 1e6)
 
     def _connect_signals(self):
         # GUI -> Logic
@@ -312,6 +345,10 @@ class MultiScaleAutoNVFinderWidget(QtWidgets.QDockWidget):
             lambda v: setattr(self._logic, 'laser_pulse_ensemble_name', v))
         self.poi_radius_spinbox.valueChanged.connect(
             lambda v: setattr(self._logic, 'poi_non_repetition_radius_m', v * 1e-6))
+        self.min_fluorescence_spinbox.valueChanged.connect(
+            lambda v: setattr(self._logic, 'min_fluorescence_counts_per_s', v * 1e3))
+        self.max_fluorescence_spinbox.valueChanged.connect(
+            lambda v: setattr(self._logic, 'max_fluorescence_counts_per_s', v * 1e6))
 
         # Logic -> GUI
         self._logic.sigStateChanged.connect(self._update_state, QtCore.Qt.QueuedConnection)
