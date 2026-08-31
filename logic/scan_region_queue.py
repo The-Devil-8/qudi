@@ -364,7 +364,7 @@ class ScanRegionQueue:
                 mean_intensity=mean_intensity,
                 parent_scan_id=parent_scan_id,
                 cropped_image=cropped,
-                macro_mask=component_mask[sl],
+                macro_mask=component_mask,
                 macro_x_coords=x_coords[col_min:col_max+1] if col_max+1 <= nx else x_coords[col_min:],
                 macro_y_coords=y_coords[row_min:row_max+1] if row_max+1 <= ny else y_coords[row_min:],
             )
