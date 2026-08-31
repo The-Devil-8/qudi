@@ -8,7 +8,9 @@ from logic.nv_candidate_verifier import (
     DiagnosticRetryPolicy,
     VerificationAuditStore,
     analyse_legacy_xy_scan,
+    analysis_gate_failures,
     candidate_to_record,
+    is_worthy_analysis,
 )
 
 
@@ -84,3 +86,66 @@ def test_candidate_record_uses_candidate_id_not_queue_index_for_identity():
                                      'y': 2e-6, 'z_estimate': 3e-6}, 9)
     assert candidate['candidate_label'] == 'POI-a1b2c3'
     assert candidate['seed_position_m'] == [1e-06, 2e-06, 3e-06]
+
+
+# --- Helpers for fluorescence gate tests ---
+
+def _good_analysis(amplitude=100000.0, offset=20000.0):
+    """Return a minimal passing analysis dict with configurable amplitude/offset."""
+    return {
+        'success': True,
+        'is_edge_fit': False,
+        'r_squared': 0.95,
+        'sigma_m': [0.15e-6, 0.15e-6],
+        'position_m': [0.0, 0.0],
+        'sampled_bounds_m': [-0.3e-6, 0.3e-6, -0.3e-6, 0.3e-6],
+        'amplitude': amplitude,
+        'offset': offset,
+    }
+
+
+def test_fluorescence_gate_rejects_too_low():
+    """Peak = 25 kc/s, min = 50 kc/s -> fluorescence_too_low."""
+    analysis = _good_analysis(amplitude=20000.0, offset=5000.0)
+    failures = analysis_gate_failures(
+        analysis, min_fluorescence_cps=50e3, max_fluorescence_cps=8e6)
+    assert 'fluorescence_too_low' in failures
+    assert 'fluorescence_too_high' not in failures
+
+
+def test_fluorescence_gate_rejects_too_high():
+    """Peak = 11 Mc/s, max = 8 Mc/s -> fluorescence_too_high."""
+    analysis = _good_analysis(amplitude=10e6, offset=1e6)
+    failures = analysis_gate_failures(
+        analysis, min_fluorescence_cps=50e3, max_fluorescence_cps=8e6)
+    assert 'fluorescence_too_high' in failures
+    assert 'fluorescence_too_low' not in failures
+
+
+def test_fluorescence_gate_passes_normal():
+    """Peak = 120 kc/s, within [50 kc/s, 8 Mc/s] -> no fluorescence failures."""
+    analysis = _good_analysis(amplitude=100000.0, offset=20000.0)
+    failures = analysis_gate_failures(
+        analysis, min_fluorescence_cps=50e3, max_fluorescence_cps=8e6)
+    assert 'fluorescence_too_low' not in failures
+    assert 'fluorescence_too_high' not in failures
+
+
+def test_fluorescence_gate_not_applied_when_none():
+    """Default None parameters -> no fluorescence gating (backward compatible)."""
+    analysis = _good_analysis(amplitude=1.0, offset=1.0)  # Very low, but no gate
+    failures = analysis_gate_failures(analysis)
+    assert 'fluorescence_too_low' not in failures
+    assert 'fluorescence_too_high' not in failures
+
+
+def test_is_worthy_analysis_with_fluorescence_gates():
+    """is_worthy_analysis passes through fluorescence params correctly."""
+    good = _good_analysis(amplitude=100000.0, offset=20000.0)
+    assert is_worthy_analysis(good, min_fluorescence_cps=50e3,
+                              max_fluorescence_cps=8e6)
+
+    too_dim = _good_analysis(amplitude=10000.0, offset=5000.0)
+    assert not is_worthy_analysis(too_dim, min_fluorescence_cps=50e3,
+                                  max_fluorescence_cps=8e6)
+

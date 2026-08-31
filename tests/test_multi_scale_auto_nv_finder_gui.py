@@ -44,6 +44,8 @@ class MockMultiScaleLogic(QtCore.QObject):
         self.measurement_ensemble_name = 'test_meas'
         self.laser_pulse_ensemble_name = 'test_laser'
         self.poi_non_repetition_radius_m = 1.0e-6
+        self.min_fluorescence_counts_per_s = 50e3
+        self.max_fluorescence_counts_per_s = 8e6
 
         self.start_multi_scale_find = MagicMock()
         self.stop_multi_scale_find = MagicMock()
@@ -79,6 +81,8 @@ class TestMultiScaleGUI:
         assert widget.measurement_name_edit.text() == 'test_meas'
         assert widget.laser_pulse_name_edit.text() == 'test_laser'
         assert widget.poi_radius_spinbox.value() == 1.0
+        assert widget.min_fluorescence_spinbox.value() == 50.0   # 50 kc/s
+        assert widget.max_fluorescence_spinbox.value() == 8.0    # 8 Mc/s
 
     def test_gui_controls_call_logic(self, widget):
         # Trigger the slots
