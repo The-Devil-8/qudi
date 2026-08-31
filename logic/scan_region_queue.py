@@ -100,7 +100,8 @@ class ScanRegion:
                  width_um=0.0, height_um=0.0, area_um2=0.0,
                  centroid_physical=None, peak_intensity=0.0,
                  mean_intensity=0.0, parent_scan_id='',
-                 cropped_image=None):
+                 cropped_image=None, macro_mask=None,
+                 macro_x_coords=None, macro_y_coords=None):
         self.region_id = region_id or f'R-{uuid.uuid4().hex[:8]}'
         self.bbox_physical = bbox_physical or (0.0, 0.0, 0.0, 0.0)
         self.bbox_pixels = bbox_pixels or (0, 0, 0, 0)
@@ -112,6 +113,9 @@ class ScanRegion:
         self.mean_intensity = mean_intensity
         self.parent_scan_id = parent_scan_id
         self.cropped_image = cropped_image
+        self.macro_mask = macro_mask
+        self.macro_x_coords = macro_x_coords
+        self.macro_y_coords = macro_y_coords
 
         # State tracking
         self.status = 'queued'
@@ -360,6 +364,9 @@ class ScanRegionQueue:
                 mean_intensity=mean_intensity,
                 parent_scan_id=parent_scan_id,
                 cropped_image=cropped,
+                macro_mask=component_mask[sl],
+                macro_x_coords=x_coords[col_min:col_max+1] if col_max+1 <= nx else x_coords[col_min:],
+                macro_y_coords=y_coords[row_min:row_max+1] if row_max+1 <= ny else y_coords[row_min:],
             )
             self._regions.append(region)
             self._region_index[region.region_id] = len(self._regions) - 1

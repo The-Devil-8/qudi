@@ -132,7 +132,7 @@ class CellRegionProcessor:
     # Main processing entry point
     # ------------------------------------------------------------------
 
-    def process(self, image,
+    def process(self, image, scan_region=None,
                 # Cell interior detection
                 cell_bg_kernel=31,
                 cell_smooth_sigma=3.0,
@@ -220,6 +220,8 @@ class CellRegionProcessor:
             Contains all masks and statistics.
         """
         fluor = image[:, :, 3].astype(float)
+        x_coords = image[0, :, 0]
+        y_coords = image[:, 0, 1]
         ny, nx = fluor.shape
         result = CellProcessingResult((ny, nx))
 
@@ -227,6 +229,7 @@ class CellRegionProcessor:
         cell_mask = self._detect_cell_interior(
             fluor, cell_bg_kernel, cell_smooth_sigma,
             cell_threshold_method, cell_min_area_fraction,
+            x_coords=x_coords, y_coords=y_coords, scan_region=scan_region
         )
         result.cell_interior_mask = cell_mask
         result.diagnostics['cell_area_px'] = int(cell_mask.sum())
@@ -301,7 +304,8 @@ class CellRegionProcessor:
     # ------------------------------------------------------------------
 
     def _detect_cell_interior(self, fluor, bg_kernel, smooth_sigma,
-                              threshold_method, min_area_fraction):
+                              threshold_method, min_area_fraction,
+                              x_coords=None, y_coords=None, scan_region=None):
         """
         Detect the cell foreground vs dark diamond substrate.
 
@@ -309,6 +313,10 @@ class CellRegionProcessor:
         fluorescence on a dark background.  A large median filter
         estimates the substrate baseline; after subtraction, Gaussian
         smoothing + Otsu thresholding isolates the cell body.
+
+        If scan_region with a macro_mask is provided, it intersects the 
+        micro-level cell boundary with the interpolated macro-level boundary
+        to eliminate false positives at the cell edges.
 
         Returns
         -------
@@ -375,6 +383,41 @@ class CellRegionProcessor:
                 cell_mask = mask
             else:
                 cell_mask = np.zeros((ny, nx), dtype=bool)
+
+        # Impose macro-level cell boundary if available
+        if scan_region is not None and getattr(scan_region, 'macro_mask', None) is not None:
+            if x_coords is not None and y_coords is not None:
+                try:
+                    from scipy.interpolate import RegularGridInterpolator
+                    macro_x = scan_region.macro_x_coords
+                    macro_y = scan_region.macro_y_coords
+                    macro_mask = scan_region.macro_mask.astype(float)
+                    
+                    if len(macro_x) > 1 and len(macro_y) > 1:
+                        # Ensure strictly increasing coordinates for RegularGridInterpolator
+                        if macro_x[0] > macro_x[-1]:
+                            macro_x = macro_x[::-1]
+                            macro_mask = macro_mask[:, ::-1]
+                        if macro_y[0] > macro_y[-1]:
+                            macro_y = macro_y[::-1]
+                            macro_mask = macro_mask[::-1, :]
+                            
+                        interp = RegularGridInterpolator(
+                            (macro_y, macro_x), macro_mask, 
+                            bounds_error=False, fill_value=0.0
+                        )
+                        
+                        # Create meshgrid of micro coords
+                        YY, XX = np.meshgrid(y_coords, x_coords, indexing='ij')
+                        points = np.stack((YY, XX), axis=-1)
+                        interp_mask = interp(points) > 0.5
+                        
+                        # Intersect the micro-level boundary with the macro-level boundary
+                        cell_mask = cell_mask & interp_mask
+                        
+                except Exception as e:
+                    # In case of any interpolation error, silently fallback to micro cell_mask
+                    print(f"Failed to impose macro mask: {e}")
 
         return cell_mask
 

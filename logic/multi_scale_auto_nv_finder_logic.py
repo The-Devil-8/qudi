@@ -559,7 +559,7 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
         z_current = image[0, 0, 2]
 
         # 1. Process cell region
-        cell_result = self._cell_processor.process(image)
+        cell_result = self._cell_processor.process(image, scan_region=self._current_region)
         
         # Save the micro scan data
         try:
