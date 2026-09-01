@@ -785,8 +785,19 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
         """Handle a rejected candidate.  Logged for diagnostics."""
         if self._state == 'idle':
             return
-        self._log('Candidate {0} rejected.'.format(
-            rejected_record.get('candidate_id', 'unknown')))
+        cand_id = rejected_record.get('candidate_id', 'unknown')
+        reason = rejected_record.get('rejection_reason', 'unknown reason')
+        details = rejected_record.get('rejection_details', [])
+        self._log('Candidate {0} REJECTED by verifier. Reason: {1}'.format(cand_id, reason))
+        print('[MultiScaleAutoNVFinderLogic] Candidate {0} REJECTED. Reason: {1}'.format(cand_id, reason))
+        if details:
+            for d in details:
+                detail_str = '  • {0}: Measured {1} | Passing Criteria: {2}'.format(
+                    d.get('label', d.get('gate_name', '')),
+                    d.get('measured_value', ''),
+                    d.get('passing_criteria', ''))
+                self._log(detail_str)
+                print(detail_str)
 
     def _start_pulsed_measurement(self, accepted_record):
         """Start a pulsed measurement (T1/ODMR) on an accepted candidate."""

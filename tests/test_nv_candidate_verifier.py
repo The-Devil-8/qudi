@@ -149,3 +149,120 @@ def test_is_worthy_analysis_with_fluorescence_gates():
     assert not is_worthy_analysis(too_dim, min_fluorescence_cps=50e3,
                                   max_fluorescence_cps=8e6)
 
+
+def test_analysis_gate_details_all_passed():
+    """All gates pass on a valid diffraction-limited spot."""
+    from logic.nv_candidate_verifier import analysis_gate_details
+
+    analysis = _good_analysis(amplitude=120000.0, offset=25000.0)
+    result = analysis_gate_details(
+        analysis, min_r_squared=0.6,
+        sigma_range_m=(0.05e-6, 0.4e-6),
+        min_fluorescence_cps=50e3,
+        max_fluorescence_cps=8e6)
+
+    assert result['passed'] is True
+    assert len(result['gate_failures']) == 0
+    assert all(d['passed'] for d in result['details'])
+
+
+def test_analysis_gate_details_r2_low_contains_values_and_criteria():
+    """When R² is low, details must contain the exact R² and passing criteria."""
+    from logic.nv_candidate_verifier import analysis_gate_details
+
+    analysis = _good_analysis()
+    analysis['r_squared'] = 0.4210
+    result = analysis_gate_details(analysis, min_r_squared=0.6)
+
+    assert result['passed'] is False
+    assert 'r2_low' in result['gate_failures']
+    r2_entry = [d for d in result['details'] if d['gate_name'] == 'r_squared'][0]
+    assert r2_entry['passed'] is False
+    assert '0.4210' in r2_entry['measured_value']
+    assert '0.6000' in r2_entry['passing_criteria']
+    assert '0.4210' in r2_entry['reason']
+    assert '0.6000' in r2_entry['reason']
+
+
+def test_analysis_gate_details_sigma_out_of_range_contains_values_and_criteria():
+    """When sigma is outside the allowed range, details must show measured nm and range."""
+    from logic.nv_candidate_verifier import analysis_gate_details
+
+    analysis = _good_analysis()
+    analysis['sigma_m'] = [0.4852e-6, 0.5120e-6]  # 485.2 nm, 512.0 nm (> 400 nm)
+    result = analysis_gate_details(
+        analysis, sigma_range_m=(0.05e-6, 0.4e-6))
+
+    assert result['passed'] is False
+    assert 'sigma_out_of_range' in result['gate_failures']
+    sig_entry = [d for d in result['details'] if d['gate_name'] == 'sigma'][0]
+    assert sig_entry['passed'] is False
+    assert '485.2' in sig_entry['measured_value']
+    assert '512.0' in sig_entry['measured_value']
+    assert '50.0' in sig_entry['passing_criteria']
+    assert '400.0' in sig_entry['passing_criteria']
+    assert 'too broad' in sig_entry['reason']
+
+
+def test_analysis_gate_details_stage2_distance_check():
+    """In stage2, POI-to-Gaussian distance > tolerance must fail with measured distance and tolerance."""
+    from logic.nv_candidate_verifier import analysis_gate_details
+
+    analysis = _good_analysis()
+    result = analysis_gate_details(
+        analysis, stage='final_state',
+        poi_gaussian_distance_m=78.4e-9,  # 78.4 nm
+        poi_gaussian_center_tolerance_m=50e-9)  # 50.0 nm max
+
+    assert result['passed'] is False
+    assert 'poi_gaussian_distance_large' in result['gate_failures']
+    dist_entry = [d for d in result['details'] if d['gate_name'] == 'poi_gaussian_distance'][0]
+    assert dist_entry['passed'] is False
+    assert '78.4' in dist_entry['measured_value']
+    assert '50.0' in dist_entry['passing_criteria']
+    assert '78.4' in dist_entry['reason']
+    assert '50.0' in dist_entry['reason']
+
+
+def test_rejection_banner_formats_failed_gates_values_and_history():
+    """Rejection banner must contain candidate ID, failed gates, values, criteria, and reasons."""
+    from logic.nv_candidate_verifier import (
+        analysis_gate_details,
+        format_candidate_rejection_banner,
+    )
+
+    analysis = _good_analysis(amplitude=20000.0, offset=5000.0)  # 25 kc/s (< 50 kc/s)
+    analysis['r_squared'] = 0.35
+    gate_details = analysis_gate_details(
+        analysis, min_r_squared=0.6,
+        min_fluorescence_cps=50e3, max_fluorescence_cps=8e6)
+
+    candidate = {
+        'candidate_id': 'POI-test-01',
+        'candidate_label': 'POI-test-01',
+        'region_id': 'R001',
+        'overall_score': 0.85,
+    }
+    history = [
+        {
+            'attempt_number': 1,
+            'stage': 'stage1',
+            'outcome': 'completed',
+            'gate_failures': ['r2_low'],
+            'optimizer2_xy': {'r_squared': 0.35, 'sigma_m': [0.15e-6, 0.15e-6]},
+        }
+    ]
+    banner = format_candidate_rejection_banner(
+        candidate, 'stage1', attempts_used=4, max_attempts=4,
+        final_gate_details=gate_details, attempt_history=history)
+
+    assert 'POI CANDIDATE REJECTED' in banner
+    assert 'POI-test-01' in banner
+    assert 'R2 Goodness of Fit' in banner
+    assert '0.3500' in banner
+    assert '0.6000' in banner
+    assert 'Peak Fluorescence Count Rate' in banner
+    assert '25.0 kc/s' in banner
+    assert '50.0 kc/s' in banner
+    assert 'ATTEMPT PROGRESSION HISTORY' in banner
+

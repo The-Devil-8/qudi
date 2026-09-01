@@ -143,6 +143,407 @@ def xy_distance_m(first_position, second_position):
     return None if offset is None else offset['radial_m']
 
 
+def analysis_gate_details(analysis, min_r_squared=0.6,
+                          sigma_range_m=(0.05e-6, 0.4e-6),
+                          min_fluorescence_cps=None,
+                          max_fluorescence_cps=None,
+                          poi_gaussian_distance_m=None,
+                          poi_gaussian_center_tolerance_m=50e-9,
+                          stage='stage1'):
+    """Return detailed gate evaluations with measured values, criteria, and failure reasons.
+
+    Parameters
+    ----------
+    analysis : dict
+        An optimizer2 XY analysis record containing fit results.
+    min_r_squared : float
+        Minimum acceptable R² goodness of fit.
+    sigma_range_m : tuple of float
+        (min_sigma, max_sigma) acceptable PSF widths in metres.
+    min_fluorescence_cps : float or None
+        Minimum acceptable peak fluorescence in counts/s.
+    max_fluorescence_cps : float or None
+        Maximum acceptable peak fluorescence in counts/s.
+    poi_gaussian_distance_m : float or None
+        Radial XY distance between POI/optimizer return and fitted Gaussian center in metres.
+    poi_gaussian_center_tolerance_m : float or None
+        Maximum acceptable distance between POI and Gaussian center in metres.
+    stage : str
+        Verification stage ('stage1' or 'final_state').
+
+    Returns
+    -------
+    dict
+        Dictionary containing:
+        - 'gate_failures': list of str failure codes
+        - 'passed': bool (True if no gate failures)
+        - 'details': list of dicts describing every evaluated gate:
+            {
+                'gate_name': str,
+                'label': str,
+                'passed': bool,
+                'failure_code': str or None,
+                'measured_value': str,
+                'passing_criteria': str,
+                'reason': str or None,
+                'raw': dict,
+            }
+        - 'measured_metrics': dict of numerical metrics
+    """
+    failures = []
+    details = []
+    measured_metrics = {}
+
+    # 1. 2D Gaussian Fit Convergence
+    fit_success = bool(analysis.get('success')) if analysis else False
+    fit_error = analysis.get('error') if analysis else 'no analysis record'
+    measured_metrics['fit_success'] = fit_success
+    measured_metrics['fit_error'] = fit_error
+
+    if not fit_success:
+        failures.append('xy_fit_failed')
+        details.append({
+            'gate_name': 'xy_fit',
+            'label': 'XY 2D Gaussian Fit',
+            'passed': False,
+            'failure_code': 'xy_fit_failed',
+            'measured_value': 'Fit Failed ({0})'.format(fit_error or 'Non-convergence'),
+            'passing_criteria': 'success == True (2D Gaussian fit converged)',
+            'reason': '2D Gaussian fit failed to converge on optimizer scan: {0}'.format(
+                fit_error or 'non-convergence'),
+            'raw': {'success': False, 'error': fit_error},
+        })
+        return {
+            'gate_failures': failures,
+            'passed': False,
+            'details': details,
+            'measured_metrics': measured_metrics,
+        }
+
+    details.append({
+        'gate_name': 'xy_fit',
+        'label': 'XY 2D Gaussian Fit',
+        'passed': True,
+        'failure_code': None,
+        'measured_value': 'Fit Succeeded',
+        'passing_criteria': 'success == True (2D Gaussian fit converged)',
+        'reason': None,
+        'raw': {'success': True, 'error': None},
+    })
+
+    # 2. Window Margin / Edge Fit
+    is_edge_fit = bool(analysis.get('is_edge_fit'))
+    measured_metrics['is_edge_fit'] = is_edge_fit
+    if is_edge_fit:
+        failures.append('edge_fit')
+        details.append({
+            'gate_name': 'edge_fit',
+            'label': 'Window Margin / Edge Fit',
+            'passed': False,
+            'failure_code': 'edge_fit',
+            'measured_value': 'is_edge_fit = True (peak at scan boundary)',
+            'passing_criteria': 'is_edge_fit == False (peak inside sampled window)',
+            'reason': 'Fitted peak is on/near the scan boundary, indicating NV spot is not centered in optimizer window',
+            'raw': {'is_edge_fit': True},
+        })
+    else:
+        details.append({
+            'gate_name': 'edge_fit',
+            'label': 'Window Margin / Edge Fit',
+            'passed': True,
+            'failure_code': None,
+            'measured_value': 'is_edge_fit = False (peak well inside scan bounds)',
+            'passing_criteria': 'is_edge_fit == False (peak inside sampled window)',
+            'reason': None,
+            'raw': {'is_edge_fit': False},
+        })
+
+    # 3. R2 Goodness of Fit
+    r_squared = analysis.get('r_squared')
+    min_r2 = float(min_r_squared)
+    measured_metrics['r_squared'] = r_squared
+    if r_squared is None or not np.isfinite(float(r_squared)):
+        failures.append('r2_missing')
+        details.append({
+            'gate_name': 'r_squared',
+            'label': 'R2 Goodness of Fit',
+            'passed': False,
+            'failure_code': 'r2_missing',
+            'measured_value': 'R2 = None / non-finite',
+            'passing_criteria': 'R2 > {0:.4f}'.format(min_r2),
+            'reason': 'R2 goodness-of-fit could not be computed (missing or non-finite)',
+            'raw': {'r_squared': None, 'min_r_squared': min_r2},
+        })
+    elif float(r_squared) <= min_r2:
+        r2_val = float(r_squared)
+        failures.append('r2_low')
+        details.append({
+            'gate_name': 'r_squared',
+            'label': 'R2 Goodness of Fit',
+            'passed': False,
+            'failure_code': 'r2_low',
+            'measured_value': 'R2 = {0:.4f}'.format(r2_val),
+            'passing_criteria': 'R2 > {0:.4f}'.format(min_r2),
+            'reason': 'R2 ({0:.4f}) is below minimum required threshold ({1:.4f})'.format(r2_val, min_r2),
+            'raw': {'r_squared': r2_val, 'min_r_squared': min_r2},
+        })
+    else:
+        r2_val = float(r_squared)
+        details.append({
+            'gate_name': 'r_squared',
+            'label': 'R2 Goodness of Fit',
+            'passed': True,
+            'failure_code': None,
+            'measured_value': 'R2 = {0:.4f}'.format(r2_val),
+            'passing_criteria': 'R2 > {0:.4f}'.format(min_r2),
+            'reason': None,
+            'raw': {'r_squared': r2_val, 'min_r_squared': min_r2},
+        })
+
+    # 4. PSF Sigma Range (Width)
+    sigma = analysis.get('sigma_m')
+    sigma_min, sigma_max = float(sigma_range_m[0]), float(sigma_range_m[1])
+    sigma_crit_str = '[{0:.1f}, {1:.1f}] nm ([{2:.3f}, {3:.3f}] um)'.format(
+        sigma_min * 1e9, sigma_max * 1e9, sigma_min * 1e6, sigma_max * 1e6)
+    if sigma is None or len(sigma) < 2:
+        failures.append('sigma_missing')
+        details.append({
+            'gate_name': 'sigma',
+            'label': 'PSF Sigma (Width)',
+            'passed': False,
+            'failure_code': 'sigma_missing',
+            'measured_value': 'sigma = missing',
+            'passing_criteria': sigma_crit_str,
+            'reason': 'Fitted Gaussian PSF width (sigma) is missing',
+            'raw': {'sigma_m': None, 'sigma_range_m': [sigma_min, sigma_max]},
+        })
+    else:
+        try:
+            sigma_x = float(sigma[0])
+            sigma_y = float(sigma[1])
+        except (TypeError, ValueError):
+            failures.append('sigma_malformed')
+            details.append({
+                'gate_name': 'sigma',
+                'label': 'PSF Sigma (Width)',
+                'passed': False,
+                'failure_code': 'sigma_malformed',
+                'measured_value': 'sigma = {0}'.format(sigma),
+                'passing_criteria': sigma_crit_str,
+                'reason': 'Fitted Gaussian sigma values are non-numeric or malformed',
+                'raw': {'sigma_m': sigma, 'sigma_range_m': [sigma_min, sigma_max]},
+            })
+        else:
+            sx_nm, sy_nm = sigma_x * 1e9, sigma_y * 1e9
+            sx_um, sy_um = sigma_x * 1e6, sigma_y * 1e6
+            measured_metrics['sigma_x_m'] = sigma_x
+            measured_metrics['sigma_y_m'] = sigma_y
+            sig_val_str = 'sigma_x = {0:.1f} nm ({1:.3f} um), sigma_y = {2:.1f} nm ({3:.3f} um)'.format(
+                sx_nm, sx_um, sy_nm, sy_um)
+            if (not np.isfinite(sigma_x) or not np.isfinite(sigma_y) or
+                    sigma_x < sigma_min or sigma_x > sigma_max or
+                    sigma_y < sigma_min or sigma_y > sigma_max):
+                failures.append('sigma_out_of_range')
+                reasons = []
+                if not np.isfinite(sigma_x) or not np.isfinite(sigma_y):
+                    reasons.append('non-finite sigma values')
+                else:
+                    if sigma_x < sigma_min:
+                        reasons.append('sigma_x ({0:.1f} nm) < min ({1:.1f} nm, too narrow/spike)'.format(sx_nm, sigma_min * 1e9))
+                    if sigma_x > sigma_max:
+                        reasons.append('sigma_x ({0:.1f} nm) > max ({1:.1f} nm, too broad/diffuse)'.format(sx_nm, sigma_max * 1e9))
+                    if sigma_y < sigma_min:
+                        reasons.append('sigma_y ({0:.1f} nm) < min ({1:.1f} nm, too narrow/spike)'.format(sy_nm, sigma_min * 1e9))
+                    if sigma_y > sigma_max:
+                        reasons.append('sigma_y ({0:.1f} nm) > max ({1:.1f} nm, too broad/diffuse)'.format(sy_nm, sigma_max * 1e9))
+                details.append({
+                    'gate_name': 'sigma',
+                    'label': 'PSF Sigma (Width)',
+                    'passed': False,
+                    'failure_code': 'sigma_out_of_range',
+                    'measured_value': sig_val_str,
+                    'passing_criteria': sigma_crit_str,
+                    'reason': 'PSF width out of range: {0}'.format(', '.join(reasons)),
+                    'raw': {'sigma_x_m': sigma_x, 'sigma_y_m': sigma_y,
+                            'sigma_range_m': [sigma_min, sigma_max]},
+                })
+            else:
+                details.append({
+                    'gate_name': 'sigma',
+                    'label': 'PSF Sigma (Width)',
+                    'passed': True,
+                    'failure_code': None,
+                    'measured_value': sig_val_str,
+                    'passing_criteria': sigma_crit_str,
+                    'reason': None,
+                    'raw': {'sigma_x_m': sigma_x, 'sigma_y_m': sigma_y,
+                            'sigma_range_m': [sigma_min, sigma_max]},
+                })
+
+    # 5. Sampled Support Bounds
+    position = analysis.get('position_m')
+    bounds = analysis.get('sampled_bounds_m')
+    if position is None or bounds is None or len(bounds) < 4:
+        failures.append('sampled_support_missing')
+        details.append({
+            'gate_name': 'sampled_support',
+            'label': 'Sampled Support Bounds',
+            'passed': False,
+            'failure_code': 'sampled_support_missing',
+            'measured_value': 'position or bounds missing',
+            'passing_criteria': 'Fitted center inside acquired coordinate bounds',
+            'reason': 'Position coordinates or sampled bounds are missing from analysis',
+            'raw': {'position_m': position, 'sampled_bounds_m': bounds},
+        })
+    else:
+        x_min, x_max, y_min, y_max = [float(v) for v in bounds[:4]]
+        center_x, center_y = [float(v) for v in position[:2]]
+        pos_str = 'center=({0:.3f}, {1:.3f}) um, bounds X=[{2:.3f}, {3:.3f}] um, Y=[{4:.3f}, {5:.3f}] um'.format(
+            center_x * 1e6, center_y * 1e6, x_min * 1e6, x_max * 1e6, y_min * 1e6, y_max * 1e6)
+        bounds_crit_str = 'center inside [{0:.3f}, {1:.3f}] um x [{2:.3f}, {3:.3f}] um'.format(
+            x_min * 1e6, x_max * 1e6, y_min * 1e6, y_max * 1e6)
+        if not (x_min <= center_x <= x_max and y_min <= center_y <= y_max):
+            failures.append('outside_sampled_support')
+            details.append({
+                'gate_name': 'sampled_support',
+                'label': 'Sampled Support Bounds',
+                'passed': False,
+                'failure_code': 'outside_sampled_support',
+                'measured_value': pos_str,
+                'passing_criteria': bounds_crit_str,
+                'reason': 'Fitted center ({0:.3f}, {1:.3f}) um is extrapolated outside acquired scan window'.format(
+                    center_x * 1e6, center_y * 1e6),
+                'raw': {'position_m': [center_x, center_y], 'sampled_bounds_m': [x_min, x_max, y_min, y_max]},
+            })
+        else:
+            details.append({
+                'gate_name': 'sampled_support',
+                'label': 'Sampled Support Bounds',
+                'passed': True,
+                'failure_code': None,
+                'measured_value': pos_str,
+                'passing_criteria': bounds_crit_str,
+                'reason': None,
+                'raw': {'position_m': [center_x, center_y], 'sampled_bounds_m': [x_min, x_max, y_min, y_max]},
+            })
+
+    # 6. Fluorescence Count Rate
+    if min_fluorescence_cps is not None or max_fluorescence_cps is not None:
+        amplitude = analysis.get('amplitude')
+        offset = analysis.get('offset')
+        if amplitude is not None and offset is not None:
+            try:
+                peak_cps = float(amplitude) + float(offset)
+            except (TypeError, ValueError):
+                peak_cps = None
+            if peak_cps is not None and np.isfinite(peak_cps):
+                measured_metrics['peak_fluorescence_cps'] = peak_cps
+                peak_kcs = peak_cps / 1e3
+                meas_fluor_str = 'peak = {0:.1f} kc/s ({1:.0f} c/s) [amplitude={2:.0f}, background={3:.0f}]'.format(
+                    peak_kcs, peak_cps, float(amplitude), float(offset))
+                min_f = float(min_fluorescence_cps) if min_fluorescence_cps is not None else None
+                max_f = float(max_fluorescence_cps) if max_fluorescence_cps is not None else None
+                if min_f is not None and max_f is not None:
+                    fluor_crit_str = '[{0:.1f}, {1:.1f}] kc/s ([{2:.0f}, {3:.0f}] c/s)'.format(
+                        min_f / 1e3, max_f / 1e3, min_f, max_f)
+                elif min_f is not None:
+                    fluor_crit_str = '>= {0:.1f} kc/s ({1:.0f} c/s)'.format(min_f / 1e3, min_f)
+                else:
+                    fluor_crit_str = '<= {0:.1f} kc/s ({1:.0f} c/s)'.format(max_f / 1e3, max_f)
+
+                if min_f is not None and peak_cps < min_f:
+                    failures.append('fluorescence_too_low')
+                    details.append({
+                        'gate_name': 'fluorescence',
+                        'label': 'Peak Fluorescence Count Rate',
+                        'passed': False,
+                        'failure_code': 'fluorescence_too_low',
+                        'measured_value': meas_fluor_str,
+                        'passing_criteria': fluor_crit_str,
+                        'reason': 'Peak fluorescence ({0:.1f} kc/s) is below minimum threshold ({1:.1f} kc/s)'.format(
+                            peak_kcs, min_f / 1e3),
+                        'raw': {'peak_cps': peak_cps, 'min_cps': min_f, 'max_cps': max_f},
+                    })
+                elif max_f is not None and peak_cps > max_f:
+                    failures.append('fluorescence_too_high')
+                    details.append({
+                        'gate_name': 'fluorescence',
+                        'label': 'Peak Fluorescence Count Rate',
+                        'passed': False,
+                        'failure_code': 'fluorescence_too_high',
+                        'measured_value': meas_fluor_str,
+                        'passing_criteria': fluor_crit_str,
+                        'reason': 'Peak fluorescence ({0:.1f} kc/s) exceeds maximum threshold ({1:.1f} kc/s, likely aggregate/macro-cluster)'.format(
+                            peak_kcs, max_f / 1e3),
+                        'raw': {'peak_cps': peak_cps, 'min_cps': min_f, 'max_cps': max_f},
+                    })
+                else:
+                    details.append({
+                        'gate_name': 'fluorescence',
+                        'label': 'Peak Fluorescence Count Rate',
+                        'passed': True,
+                        'failure_code': None,
+                        'measured_value': meas_fluor_str,
+                        'passing_criteria': fluor_crit_str,
+                        'reason': None,
+                        'raw': {'peak_cps': peak_cps, 'min_cps': min_f, 'max_cps': max_f},
+                    })
+
+    # 7. Stage 2 (Final State) POI-to-Gaussian Center Distance
+    if stage == 'final_state':
+        final_tol = float(poi_gaussian_center_tolerance_m) if poi_gaussian_center_tolerance_m is not None else 50e-9
+        tol_str = '<= {0:.1f} nm ({1:.4f} um)'.format(final_tol * 1e9, final_tol * 1e6)
+        if poi_gaussian_distance_m is None:
+            failures.append('poi_gaussian_distance_missing')
+            details.append({
+                'gate_name': 'poi_gaussian_distance',
+                'label': 'POI-to-Gaussian Center Distance',
+                'passed': False,
+                'failure_code': 'poi_gaussian_distance_missing',
+                'measured_value': 'distance = None / missing',
+                'passing_criteria': tol_str,
+                'reason': 'POI-to-Gaussian center distance could not be computed (missing position coordinates)',
+                'raw': {'distance_m': None, 'tolerance_m': final_tol},
+            })
+        else:
+            dist_val = float(poi_gaussian_distance_m)
+            dist_nm = dist_val * 1e9
+            dist_um = dist_val * 1e6
+            measured_metrics['poi_gaussian_distance_m'] = dist_val
+            meas_dist_str = 'distance = {0:.1f} nm ({1:.4f} um)'.format(dist_nm, dist_um)
+            if dist_val > final_tol:
+                failures.append('poi_gaussian_distance_large')
+                details.append({
+                    'gate_name': 'poi_gaussian_distance',
+                    'label': 'POI-to-Gaussian Center Distance',
+                    'passed': False,
+                    'failure_code': 'poi_gaussian_distance_large',
+                    'measured_value': meas_dist_str,
+                    'passing_criteria': tol_str,
+                    'reason': 'POI center and Gaussian center have not converged: distance ({0:.1f} nm) exceeds tolerance ({1:.1f} nm)'.format(
+                        dist_nm, final_tol * 1e9),
+                    'raw': {'distance_m': dist_val, 'tolerance_m': final_tol},
+                })
+            else:
+                details.append({
+                    'gate_name': 'poi_gaussian_distance',
+                    'label': 'POI-to-Gaussian Center Distance',
+                    'passed': True,
+                    'failure_code': None,
+                    'measured_value': meas_dist_str,
+                    'passing_criteria': tol_str,
+                    'reason': None,
+                    'raw': {'distance_m': dist_val, 'tolerance_m': final_tol},
+                })
+
+    return {
+        'gate_failures': failures,
+        'passed': len(failures) == 0,
+        'details': details,
+        'measured_metrics': measured_metrics,
+    }
+
+
 def analysis_gate_failures(analysis, min_r_squared=0.6,
                            sigma_range_m=(0.05e-6, 0.4e-6),
                            min_fluorescence_cps=None,
@@ -164,58 +565,12 @@ def analysis_gate_failures(analysis, min_r_squared=0.6,
         Maximum acceptable peak fluorescence in counts/s
         (amplitude + offset).  ``None`` disables this gate.
     """
-    failures = []
-    if not analysis or not bool(analysis.get('success')):
-        failures.append('xy_fit_failed')
-        return failures
-    if bool(analysis.get('is_edge_fit')):
-        failures.append('edge_fit')
-    r_squared = analysis.get('r_squared')
-    if r_squared is None or not np.isfinite(float(r_squared)):
-        failures.append('r2_missing')
-    elif float(r_squared) <= float(min_r_squared):
-        failures.append('r2_low')
-    sigma = analysis.get('sigma_m')
-    if sigma is None or len(sigma) < 2:
-        failures.append('sigma_missing')
-    else:
-        sigma_min, sigma_max = (float(sigma_range_m[0]), float(sigma_range_m[1]))
-        try:
-            sigma_x = float(sigma[0])
-            sigma_y = float(sigma[1])
-        except (TypeError, ValueError):
-            failures.append('sigma_malformed')
-        else:
-            if (not np.isfinite(sigma_x) or not np.isfinite(sigma_y) or
-                    sigma_x < sigma_min or sigma_x > sigma_max or
-                    sigma_y < sigma_min or sigma_y > sigma_max):
-                failures.append('sigma_out_of_range')
-    position = analysis.get('position_m')
-    bounds = analysis.get('sampled_bounds_m')
-    if position is None or bounds is None or len(bounds) < 4:
-        failures.append('sampled_support_missing')
-    else:
-        x_min, x_max, y_min, y_max = [float(value) for value in bounds[:4]]
-        center_x, center_y = [float(value) for value in position[:2]]
-        if not (x_min <= center_x <= x_max and y_min <= center_y <= y_max):
-            failures.append('outside_sampled_support')
-    # --- Fluorescence count rate gate ---
-    if min_fluorescence_cps is not None or max_fluorescence_cps is not None:
-        amplitude = analysis.get('amplitude')
-        offset = analysis.get('offset')
-        if amplitude is not None and offset is not None:
-            try:
-                peak_cps = float(amplitude) + float(offset)
-            except (TypeError, ValueError):
-                peak_cps = None
-            if peak_cps is not None and np.isfinite(peak_cps):
-                if (min_fluorescence_cps is not None and
-                        peak_cps < float(min_fluorescence_cps)):
-                    failures.append('fluorescence_too_low')
-                if (max_fluorescence_cps is not None and
-                        peak_cps > float(max_fluorescence_cps)):
-                    failures.append('fluorescence_too_high')
-    return failures
+    result = analysis_gate_details(
+        analysis, min_r_squared=min_r_squared,
+        sigma_range_m=sigma_range_m,
+        min_fluorescence_cps=min_fluorescence_cps,
+        max_fluorescence_cps=max_fluorescence_cps)
+    return result['gate_failures']
 
 
 def is_worthy_analysis(analysis, min_r_squared=0.6,
@@ -225,6 +580,123 @@ def is_worthy_analysis(analysis, min_r_squared=0.6,
     """Return whether an XY analysis passes the configured worthy gates."""
     return not analysis_gate_failures(analysis, min_r_squared, sigma_range_m,
                                      min_fluorescence_cps, max_fluorescence_cps)
+
+
+def format_gate_failures_text(gate_details_list):
+    """Format a bulleted list of failed gates with measured values, criteria, and reasons."""
+    failed_entries = [d for d in gate_details_list if not d.get('passed', True)]
+    if not failed_entries:
+        return '    (None - all evaluated gates passed)'
+    lines = []
+    for index, entry in enumerate(failed_entries, 1):
+        lines.append('    [{0}] {1}:'.format(index, entry.get('label', entry.get('gate_name'))))
+        lines.append('        * Measured Value   : {0}'.format(entry.get('measured_value', 'N/A')))
+        lines.append('        * Passing Criteria : {0}'.format(entry.get('passing_criteria', 'N/A')))
+        if entry.get('reason'):
+            lines.append('        * Failure Reason   : {0}'.format(entry.get('reason')))
+    return '\n'.join(lines)
+
+
+def format_attempt_metrics_summary(candidate_id, stage, attempt_number, max_attempts, gate_details_dict):
+    """Format a compact multi-line summary of an attempt for logging/printing."""
+    details = gate_details_dict.get('details', [])
+    lines = [
+        '[NVCandidateVerifier] Candidate \'{0}\' | Stage: {1} | Attempt {2}/{3}:'.format(
+            candidate_id, stage, attempt_number, max_attempts)
+    ]
+    for entry in details:
+        status_tag = '[PASS]' if entry.get('passed') else '[FAIL]'
+        lines.append('    {0:<6} {1:<30} : {2} (Criteria: {3})'.format(
+            status_tag, entry.get('label', ''), entry.get('measured_value', ''),
+            entry.get('passing_criteria', '')))
+    return '\n'.join(lines)
+
+
+def format_candidate_rejection_banner(candidate, stage, attempts_used, max_attempts,
+                                      final_gate_details, attempt_history=None):
+    """Format a prominent rejection report banner for logging and console output."""
+    cand_id = candidate.get('candidate_id', 'unknown')
+    cand_label = candidate.get('candidate_label', cand_id)
+    region_id = candidate.get('region_id', 'N/A')
+    score = candidate.get('overall_score')
+    score_str = '{0:.3f}'.format(score) if score is not None else 'N/A'
+
+    stage_desc = (
+        'Stage 1 (WorthyCandidate Search)'
+        if stage == 'stage1'
+        else 'Stage 2 (Final State Convergence)')
+
+    sep_thick = '=' * 80
+    sep_thin = '-' * 80
+    lines = [
+        sep_thick,
+        '[NVCandidateVerifier] >>> POI CANDIDATE REJECTED <<<',
+        sep_thin,
+        '  Candidate ID   : {0} (Label: {1}, Region: {2})'.format(cand_id, cand_label, region_id),
+        '  Overall Score  : {0}'.format(score_str),
+        '  Status         : REJECTED',
+        '  Stage Stopped  : {0}'.format(stage_desc),
+        '  Attempts Used  : {0} of {1} allowed attempts'.format(attempts_used, max_attempts),
+        sep_thin,
+        '  REJECTION REASON:',
+        '    {0} attempt budget exhausted without meeting all optical quality gates.'.format(stage_desc),
+        '',
+        '  FAILED GATES ON FINAL ATTEMPT:',
+    ]
+    failed_entries = [d for d in final_gate_details.get('details', []) if not d.get('passed', True)]
+    if failed_entries:
+        lines.append(format_gate_failures_text(final_gate_details.get('details', [])))
+    else:
+        lines.append('    (No individual gate failed; non-scan / budget condition)')
+
+    if attempt_history:
+        lines.append('')
+        lines.append('  ATTEMPT PROGRESSION HISTORY ({0} attempts):'.format(len(attempt_history)))
+        for att in attempt_history:
+            att_num = att.get('attempt_number', '?')
+            att_stage = att.get('stage', '?')
+            att_outcome = att.get('outcome', '?')
+            att_failures = att.get('gate_failures', [])
+            att_analysis = att.get('optimizer2_xy', {})
+            r2 = att_analysis.get('r_squared')
+            r2_s = '{0:.3f}'.format(r2) if r2 is not None else 'N/A'
+            sigma = att_analysis.get('sigma_m') or [None, None]
+            sx_s = '{0:.1f}'.format(sigma[0] * 1e9) if sigma[0] is not None else 'N/A'
+            sy_s = '{0:.1f}'.format(sigma[1] * 1e9) if sigma[1] is not None else 'N/A'
+            dist = att.get('poi_gaussian_distance_xy_m')
+            dist_s = '{0:.1f} nm'.format(dist * 1e9) if dist is not None else 'N/A'
+            fail_str = ', '.join(att_failures) if att_failures else 'none (all passed)'
+            lines.append('    * Attempt {0} ({1}): Outcome={2} | Failed Gates=[{3}] | R2={4}, sigma=({5}, {6}) nm, Distance={7}'.format(
+                att_num, att_stage, att_outcome, fail_str, r2_s, sx_s, sy_s, dist_s))
+
+    lines.append(sep_thick)
+    return '\n'.join(lines)
+
+
+def format_candidate_acceptance_banner(candidate, accepted_position, poi_name,
+                                       final_gate_details, registration_status):
+    """Format an acceptance banner for logging and console output."""
+    cand_id = candidate.get('candidate_id', 'unknown')
+    sep_thick = '=' * 80
+    sep_thin = '-' * 80
+    lines = [
+        sep_thick,
+        '[NVCandidateVerifier] >>> POI CANDIDATE ACCEPTED & OPTICALLY VERIFIED <<<',
+        sep_thin,
+        '  Candidate ID   : {0}'.format(cand_id),
+        '  Status         : OPTICALLY VERIFIED',
+        '  POI Name       : {0}'.format(poi_name),
+        '  Position (XYZ) : [{0:.3f}, {1:.3f}, {2:.3f}] um'.format(
+            accepted_position[0] * 1e6, accepted_position[1] * 1e6, accepted_position[2] * 1e6),
+        '  Registration   : {0}'.format(registration_status),
+        '  Final Optical Gate Verification:',
+    ]
+    for entry in final_gate_details.get('details', []):
+        status_tag = '[PASS]' if entry.get('passed') else '[FAIL]'
+        lines.append('    {0:<6} {1:<30} : {2}'.format(
+            status_tag, entry.get('label', ''), entry.get('measured_value', '')))
+    lines.append(sep_thick)
+    return '\n'.join(lines)
 
 
 def analyse_legacy_xy_scan(xy_refocus_image, x_values, y_values, seed_position_m,
@@ -380,6 +852,17 @@ class NVCandidateVerifier(GenericLogic):
     sigCandidateAccepted = QtCore.Signal(object)
     sigCandidateRejected = QtCore.Signal(object)
 
+    def _log_and_print(self, message, level='info'):
+        """Log to Qudi logger and print to stdout so messages are visible everywhere."""
+        print(message)
+        if hasattr(self, 'log'):
+            if level == 'warning':
+                self.log.warning(message)
+            elif level == 'error':
+                self.log.error(message)
+            else:
+                self.log.info(message)
+
     # ------------------------------------------------------------------
     # Backward-compatible property for configs still using diagnostic_only
     # ------------------------------------------------------------------
@@ -498,6 +981,20 @@ class NVCandidateVerifier(GenericLogic):
         self._stop_requested = False
         self._current_index = 0
         self._current_stage = 'stage1'
+
+        min_fl_str = '{0:.1f}'.format(float(self.min_fluorescence_counts_per_s) / 1e3) if self.min_fluorescence_counts_per_s is not None else 'None'
+        max_fl_str = '{0:.1f}'.format(float(self.max_fluorescence_counts_per_s) / 1e3) if self.max_fluorescence_counts_per_s is not None else 'None'
+        self._log_and_print(
+            "[NVCandidateVerifier] Starting verification batch: {0} candidate(s) | Mode: '{1}'\n"
+            "  Policy parameters: Stage 1 max attempts={2}, Stage 2 max attempts={3}, "
+            "min R²={4:.2f}, sigma range=[{5:.1f}, {6:.1f}] nm, fluorescence range=[{7}, {8}] kc/s, "
+            "center tolerance={9:.1f} nm".format(
+                len(records), self._effective_mode(), int(self.stage1_max_attempts),
+                int(self.stage2_max_attempts), float(self.worthy_min_xy_r_squared),
+                float(self.worthy_sigma_min_m) * 1e9, float(self.worthy_sigma_max_m) * 1e9,
+                min_fl_str, max_fl_str,
+                float(self.poi_gaussian_center_tolerance_m) * 1e9))
+
         QtCore.QTimer.singleShot(0, self._start_current_attempt)
         return run_id
 
@@ -535,9 +1032,9 @@ class NVCandidateVerifier(GenericLogic):
             'attempt_timeout_s': float(self.attempt_timeout_s),
             'timeout_cleanup_s': float(self.timeout_cleanup_s),
             'min_fluorescence_counts_per_s': float(
-                self.min_fluorescence_counts_per_s),
+                self.min_fluorescence_counts_per_s) if self.min_fluorescence_counts_per_s is not None else None,
             'max_fluorescence_counts_per_s': float(
-                self.max_fluorescence_counts_per_s),
+                self.max_fluorescence_counts_per_s) if self.max_fluorescence_counts_per_s is not None else None,
         }
 
     def _sigma_range_m(self):
@@ -578,6 +1075,21 @@ class NVCandidateVerifier(GenericLogic):
         self._attempt_started_utc = _utc_timestamp()
         self._timeout_requested = False
         candidate['status'] = 'scanning_{0}'.format(self._current_stage)
+
+        self._log_and_print(
+            "\n[NVCandidateVerifier] >>> Scanning Candidate '{0}' ({1}/{2}) | Stage: {3} | Attempt {4}/{5} <<<\n"
+            "  Seed position: [{6:.3f}, {7:.3f}, {8:.3f}] µm | Caller tag: {9}".format(
+                candidate['candidate_id'],
+                self._current_index + 1,
+                len(self._batch['candidates']),
+                self._current_stage,
+                attempt_number,
+                self._stage_max_attempts(self._current_stage),
+                candidate['current_seed_position_m'][0] * 1e6,
+                candidate['current_seed_position_m'][1] * 1e6,
+                candidate['current_seed_position_m'][2] * 1e6,
+                self._active_tag))
+
         self.sigVerificationProgress.emit(self._batch['run_id'], candidate['candidate_id'],
                                           attempt_number,
                                           self._stage_max_attempts(self._current_stage))
@@ -641,6 +1153,10 @@ class NVCandidateVerifier(GenericLogic):
         candidate['status'] = 'unresolved'
         self._finalize_logged_candidate(candidate, 'unresolved',
                                         rejection_reason=attempt['error'])
+        self._log_and_print(
+            "[NVCandidateVerifier] Candidate '{0}' TIMEOUT on attempt {1}: {2}".format(
+                candidate['candidate_id'], attempt_number, attempt['error']),
+            level='error')
         self.sigVerificationError.emit(self._batch['run_id'], attempt['error'])
         self._active_tag = None
         self._finish_batch('stopped' if self._stop_requested else 'timed_out')
@@ -708,19 +1224,41 @@ class NVCandidateVerifier(GenericLogic):
             'seed_position_m': seed_position,
             'legacy_return_position_m': optimal_position,
         }
-        gate_failures = analysis_gate_failures(
-            analysis, self.worthy_min_xy_r_squared, self._sigma_range_m(),
-            min_fluorescence_cps=float(self.min_fluorescence_counts_per_s),
-            max_fluorescence_cps=float(self.max_fluorescence_counts_per_s))
+
         poi_gaussian_distance = xy_distance_m(optimal_position,
                                              analysis.get('position_m'))
         final_tolerance = float(self.poi_gaussian_center_tolerance_m)
-        final_gate_failures = list(gate_failures)
-        if self._current_stage == 'final_state':
-            if poi_gaussian_distance is None:
-                final_gate_failures.append('poi_gaussian_distance_missing')
-            elif poi_gaussian_distance > final_tolerance:
-                final_gate_failures.append('poi_gaussian_distance_large')
+
+        gate_details_dict = analysis_gate_details(
+            analysis,
+            min_r_squared=float(self.worthy_min_xy_r_squared),
+            sigma_range_m=self._sigma_range_m(),
+            min_fluorescence_cps=float(self.min_fluorescence_counts_per_s) if self.min_fluorescence_counts_per_s is not None else None,
+            max_fluorescence_cps=float(self.max_fluorescence_counts_per_s) if self.max_fluorescence_counts_per_s is not None else None,
+            poi_gaussian_distance_m=poi_gaussian_distance,
+            poi_gaussian_center_tolerance_m=final_tolerance,
+            stage=self._current_stage)
+
+        final_gate_failures = gate_details_dict['gate_failures']
+        gate_details = gate_details_dict['details']
+        gate_failure_details = [d for d in gate_details if not d.get('passed', True)]
+
+        # Log attempt metrics summary and failure details
+        summary_msg = format_attempt_metrics_summary(
+            candidate['candidate_id'], self._current_stage, attempt_number,
+            self._stage_max_attempts(self._current_stage), gate_details_dict)
+        self._log_and_print(summary_msg)
+
+        if gate_failure_details:
+            self._log_and_print("  Failed Gate Details on this attempt:\n" + format_gate_failures_text(gate_details))
+
+        worthy_candidate = len(analysis_gate_failures(
+            analysis, float(self.worthy_min_xy_r_squared), self._sigma_range_m(),
+            min_fluorescence_cps=float(self.min_fluorescence_counts_per_s) if self.min_fluorescence_counts_per_s is not None else None,
+            max_fluorescence_cps=float(self.max_fluorescence_counts_per_s) if self.max_fluorescence_counts_per_s is not None else None)) == 0
+
+        final_state_fit = (self._current_stage == 'final_state' and len(final_gate_failures) == 0)
+
         return {
             'run_id': self._batch['run_id'],
             'candidate_id': candidate['candidate_id'],
@@ -742,9 +1280,10 @@ class NVCandidateVerifier(GenericLogic):
                                    'indeterminate: zero/absent legacy sigma can represent a fallback'),
             'optimizer2_xy': analysis,
             'gate_failures': final_gate_failures,
-            'worthy_candidate': not gate_failures,
-            'final_state_fit': (
-                self._current_stage == 'final_state' and not final_gate_failures),
+            'gate_details_dict': gate_details_dict,
+            'gate_failure_details': gate_failure_details,
+            'worthy_candidate': worthy_candidate,
+            'final_state_fit': final_state_fit,
             'poi_gaussian_distance_xy_m': poi_gaussian_distance,
         }, arrays
 
@@ -765,6 +1304,10 @@ class NVCandidateVerifier(GenericLogic):
             'gate_failures': [outcome],
             'optimizer2_xy': {'success': False, 'is_edge_fit': False, 'error': error},
         }
+        self._log_and_print(
+            "[NVCandidateVerifier] Candidate '{0}' Attempt {1} NON-SCAN ERROR: outcome='{2}', error='{3}'".format(
+                candidate['candidate_id'], attempt_number, outcome, error),
+            level='error')
         self._record_attempt(candidate, attempt_number, attempt, None)
         self._finalize_logged_candidate(candidate, 'unresolved',
                                         rejection_reason=error)
@@ -849,24 +1392,45 @@ class NVCandidateVerifier(GenericLogic):
 
     def _evaluate_after_attempt(self, candidate, attempt):
         if attempt.get('outcome') in ('timeout', 'hardware_error', 'hardware_busy'):
+            rejection_reason = attempt.get('error') or attempt.get('outcome')
+            self._log_and_print(
+                "[NVCandidateVerifier] Candidate '{0}' marked UNRESOLVED: {1}".format(
+                    candidate['candidate_id'], rejection_reason),
+                level='warning')
             self._finalize_logged_candidate(
                 candidate, 'unresolved',
-                rejection_reason=attempt.get('error') or attempt.get('outcome'))
+                rejection_reason=rejection_reason)
             return 'unresolved'
 
         if attempt.get('stage') == 'stage1':
             if bool(attempt.get('worthy_candidate')):
                 candidate['stage'] = 'final_state'
                 candidate['status'] = 'enter_final_state'
+                self._log_and_print(
+                    "[NVCandidateVerifier] Candidate '{0}' PASSED Stage 1 WorthyCandidate! Advancing to Stage 2 (final_state)...".format(
+                        candidate['candidate_id']))
                 return 'enter_final_state'
             if int(candidate.get('stage1_attempts', 0)) >= int(self.stage1_max_attempts):
                 candidate['status'] = 'rejected'
+                rejection_banner = format_candidate_rejection_banner(
+                    candidate, 'stage1', int(candidate.get('stage1_attempts', 0)),
+                    int(self.stage1_max_attempts), attempt.get('gate_details_dict', {}),
+                    attempt_history=candidate.get('attempts', []))
+                self._log_and_print(rejection_banner, level='warning')
+                rejection_reason = 'stage1_budget_exhausted:{0}'.format(
+                    ','.join(attempt.get('gate_failures', [])))
+                candidate['rejection_reason'] = rejection_reason
+                candidate['rejection_details'] = attempt.get('gate_failure_details', [])
                 self._finalize_logged_candidate(
                     candidate, 'rejected',
-                    rejection_reason='stage1_budget_exhausted:{0}'.format(
-                        ','.join(attempt.get('gate_failures', []))))
+                    rejection_reason=rejection_reason)
                 self.sigCandidateRejected.emit(dict(candidate))
                 return 'rejected'
+            failed_str = ', '.join(attempt.get('gate_failures', [])) or 'unresolved'
+            self._log_and_print(
+                "[NVCandidateVerifier] Candidate '{0}' Stage 1 attempt {1}/{2} failed gates [{3}]. Retrying next attempt...".format(
+                    candidate['candidate_id'], int(candidate.get('stage1_attempts', 0)),
+                    int(self.stage1_max_attempts), failed_str))
             return 'retry'
 
         if attempt.get('stage') == 'final_state':
@@ -874,12 +1438,25 @@ class NVCandidateVerifier(GenericLogic):
                 return self._accept_candidate(candidate, attempt)
             if int(candidate.get('final_state_attempts', 0)) >= int(self.stage2_max_attempts):
                 candidate['status'] = 'rejected'
+                rejection_banner = format_candidate_rejection_banner(
+                    candidate, 'final_state', int(candidate.get('final_state_attempts', 0)),
+                    int(self.stage2_max_attempts), attempt.get('gate_details_dict', {}),
+                    attempt_history=candidate.get('attempts', []))
+                self._log_and_print(rejection_banner, level='warning')
+                rejection_reason = 'final_state_budget_exhausted:{0}'.format(
+                    ','.join(attempt.get('gate_failures', [])))
+                candidate['rejection_reason'] = rejection_reason
+                candidate['rejection_details'] = attempt.get('gate_failure_details', [])
                 self._finalize_logged_candidate(
                     candidate, 'rejected',
-                    rejection_reason='final_state_budget_exhausted:{0}'.format(
-                        ','.join(attempt.get('gate_failures', []))))
+                    rejection_reason=rejection_reason)
                 self.sigCandidateRejected.emit(dict(candidate))
                 return 'rejected'
+            failed_str = ', '.join(attempt.get('gate_failures', [])) or 'unresolved'
+            self._log_and_print(
+                "[NVCandidateVerifier] Candidate '{0}' Stage 2 attempt {1}/{2} failed gates [{3}]. Retrying next attempt...".format(
+                    candidate['candidate_id'], int(candidate.get('final_state_attempts', 0)),
+                    int(self.stage2_max_attempts), failed_str))
             return 'retry'
 
         self._finalize_logged_candidate(candidate, 'unresolved',
@@ -924,10 +1501,12 @@ class NVCandidateVerifier(GenericLogic):
             poi_name=poi_name,
             registration_status=registration_status)
 
-        # Emit acceptance signal for downstream consumers (orchestrator,
-        # PulsedMeasurementExecutor).  In diagnostic mode the signal is
-        # still emitted so that GUI can update, but the candidate record
-        # will carry 'diagnostic_not_registered' as its registration_status.
+        # Emit acceptance signal and log banner
+        acceptance_banner = format_candidate_acceptance_banner(
+            candidate, accepted_position, poi_name,
+            attempt.get('gate_details_dict', {}), registration_status)
+        self._log_and_print(acceptance_banner)
+
         accepted_record = {
             'candidate_id': candidate['candidate_id'],
             'candidate_label': candidate['candidate_label'],
