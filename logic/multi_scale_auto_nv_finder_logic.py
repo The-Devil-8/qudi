@@ -75,6 +75,7 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
     pulsedmeasurementexecutor = Connector(
         interface='PulsedMeasurementExecutor', optional=True)
     poimanagerlogic = Connector(interface='PoiManagerLogic', optional=True)
+    savelogic = Connector(interface='SaveLogic', optional=True)
 
     # =====================================================================
     # StatusVars — Original scanning parameters
@@ -335,8 +336,35 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
         self._current_cell_candidates = []
         self._drift_tracker.reset()
 
-        # Initialize systematic session data logger
+        # Resolve output directory: explicit output_data_dir -> SaveLogic get_daily_directory() -> SaveLogic data_dir -> fallback
         out_dir = str(self._val(self.output_data_dir, '')).strip() or None
+        if not out_dir:
+            sl = None
+            try:
+                if self.savelogic.is_connected and self.savelogic() is not None:
+                    sl = self.savelogic()
+            except Exception:
+                pass
+            if sl is None:
+                try:
+                    poi_mgr = self._get_poi_manager()
+                    if poi_mgr is not None and hasattr(poi_mgr, 'savelogic') and poi_mgr.savelogic() is not None:
+                        sl = poi_mgr.savelogic()
+                except Exception:
+                    pass
+            if sl is not None:
+                try:
+                    if hasattr(sl, 'get_daily_directory') and callable(sl.get_daily_directory):
+                        out_dir = sl.get_daily_directory()
+                    elif hasattr(sl, 'data_dir') and sl.data_dir:
+                        out_dir = sl.data_dir
+                    elif hasattr(sl, 'daily_directory') and sl.daily_directory:
+                        out_dir = sl.daily_directory
+                    elif hasattr(sl, 'win_data_directory') and sl.win_data_directory:
+                        out_dir = sl.win_data_directory
+                except Exception as e:
+                    self._log('Note: could not get directory from SaveLogic: {0}'.format(e))
+
         target_cells_num = int(self._val(self.target_cells, 5))
         target_nvs_num = int(self._val(self.target_nvs_per_cell, 3))
         pulsed_enabled = bool(self._val(self.enable_pulsed_measurement, False))
@@ -408,6 +436,8 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
 
     def _log(self, message):
         self.log.info(message)
+        print('[{0}][MultiScaleAutoNV] {1}'.format(
+            time.strftime('%H:%M:%S'), message), flush=True)
         self.sigLogMessage.emit('[{0}] {1}'.format(
             time.strftime('%H:%M:%S'), message))
 
@@ -595,125 +625,131 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
             return
 
         self._set_state('micro_processing')
-        self._log('MICRO scan complete for {0}. Running CIP and '
-                  'extractor...'.format(self._current_region.region_id))
+        region_id_str = self._current_region.region_id if self._current_region else 'current region'
+        self._log('MICRO scan complete for {0}. Running CIP and extractor...'.format(region_id_str))
 
-        image = self.confocallogic().xy_image
-        x_coords = image[0, :, 0]
-        y_coords = image[:, 0, 1]
-        z_current = image[0, 0, 2]
+        try:
+            image = self.confocallogic().xy_image
+            x_coords = image[0, :, 0]
+            y_coords = image[:, 0, 1]
+            z_current = image[0, 0, 2]
 
-        self._current_micro_image = image
-        self._current_micro_x_coords = x_coords
-        self._current_micro_y_coords = y_coords
-        self._current_micro_z = z_current
+            self._current_micro_image = image
+            self._current_micro_x_coords = x_coords
+            self._current_micro_y_coords = y_coords
+            self._current_micro_z = z_current
 
-        # Update PoiManagerLogic scan image so GUI displays this close-scan
-        poi_mgr = self._get_poi_manager()
-        if poi_mgr is not None:
-            try:
-                poi_mgr.set_scan_image(emit_change=True)
-            except Exception as e:
-                self._log('Note: could not update POI Manager scan image: {0}'.format(e))
+            # Update PoiManagerLogic scan image so GUI displays this close-scan
+            poi_mgr = self._get_poi_manager()
+            if poi_mgr is not None:
+                try:
+                    poi_mgr.set_scan_image(emit_change=True)
+                except Exception as e:
+                    self._log('Note: could not update POI Manager scan image: {0}'.format(e))
 
-        # 1. Process cell region
-        cell_result = self._cell_processor.process(image, scan_region=self._current_region)
-        self._current_cell_result = cell_result
+            # 1. Process cell region
+            cell_result = self._cell_processor.process(image, scan_region=self._current_region)
+            self._current_cell_result = cell_result
 
-        # --- Diagnostic: Cell processor results ---
-        fluor = image[:, :, 3]
-        self._log('  Image shape: {0}, fluor range: [{1:.0f}, {2:.0f}] c/s'.format(
-            image.shape, float(fluor.min()), float(fluor.max())))
-        self._log('  Cell interior: {0} px ({1:.1f}%), Nucleus: {2} px, '
-                  'Bright clusters: {3} px'.format(
-                      cell_result.diagnostics.get('cell_area_px', 0),
-                      cell_result.diagnostics.get('cell_area_fraction', 0) * 100,
-                      cell_result.diagnostics.get('nucleus_area_px', 0),
-                      cell_result.diagnostics.get('bright_cluster_area_px', 0)))
-        proc_area = cell_result.diagnostics.get('processable_area_px', 0)
-        self._log('  Processable zone: {0} px, processable={1}'.format(
-            proc_area, cell_result.zone_stats.get('processable', False)))
-        if cell_result.zone_stats.get('processable', False):
-            self._log('  Zone stats: median={0:.0f}, std={1:.0f}, '
-                      'max={2:.0f} c/s'.format(
-                          cell_result.zone_stats.get('median_intensity', 0),
-                          cell_result.zone_stats.get('std_intensity', 0),
-                          cell_result.zone_stats.get('max_intensity', 0)))
-        else:
-            self._log('  Zone NOT processable: {0}'.format(
-                cell_result.zone_stats.get('reason', 'unknown')))
+            # --- Diagnostic: Cell processor results ---
+            fluor = image[:, :, 3]
+            self._log('  Image shape: {0}, fluor range: [{1:.0f}, {2:.0f}] c/s'.format(
+                image.shape, float(fluor.min()), float(fluor.max())))
+            self._log('  Cell interior: {0} px ({1:.1f}%), Nucleus: {2} px, '
+                      'Bright clusters: {3} px'.format(
+                          cell_result.diagnostics.get('cell_area_px', 0),
+                          cell_result.diagnostics.get('cell_area_fraction', 0) * 100,
+                          cell_result.diagnostics.get('nucleus_area_px', 0),
+                          cell_result.diagnostics.get('bright_cluster_area_px', 0)))
+            proc_area = cell_result.diagnostics.get('processable_area_px', 0)
+            self._log('  Processable zone: {0} px, processable={1}'.format(
+                proc_area, cell_result.zone_stats.get('processable', False)))
+            if cell_result.zone_stats.get('processable', False):
+                self._log('  Zone stats: median={0:.0f}, std={1:.0f}, '
+                          'max={2:.0f} c/s'.format(
+                              cell_result.zone_stats.get('median_intensity', 0),
+                              cell_result.zone_stats.get('std_intensity', 0),
+                              cell_result.zone_stats.get('max_intensity', 0)))
+            else:
+                self._log('  Zone NOT processable: {0}'.format(
+                    cell_result.zone_stats.get('reason', 'unknown')))
 
-        if hasattr(cell_result, 'processable_mask'):
-            self.sigVisualUpdate.emit(
-                'Processable Zone Mask', cell_result.processable_mask)
+            if hasattr(cell_result, 'processable_mask'):
+                self.sigVisualUpdate.emit(
+                    'Processable Zone Mask', cell_result.processable_mask)
 
-        # 2. Extract POI candidates
-        extraction_result = self._poi_extractor.extract(
-            cell_result, image, x_coords=x_coords, y_coords=y_coords,
-            z_current=z_current, scan_region=self._current_region)
+            # 2. Extract POI candidates
+            extraction_result = self._poi_extractor.extract(
+                cell_result, image, x_coords=x_coords, y_coords=y_coords,
+                z_current=z_current, scan_region=self._current_region)
 
-        self._current_cell_candidates = getattr(
-            extraction_result, 'all_candidates', extraction_result.candidates)
+            self._current_cell_candidates = getattr(
+                extraction_result, 'all_candidates', extraction_result.candidates)
 
-        # --- Diagnostic: Extraction pipeline results ---
-        diag = extraction_result.diagnostics
-        self._log('  CIP: noise={0:.1f}, threshold={1:.1f}, spot_px={2}'.format(
-            diag.get('noise_sigma', 0),
-            diag.get('threshold_used', 0),
-            diag.get('spot_px', 0)))
-        self._log('  CIP stages: above_thr={0}, maxima={1}, in_zone={2}, '
-                  'shape_ok={3}, clustered={4}, total_det={5}'.format(
-                      diag.get('n_above_threshold', 0),
-                      diag.get('n_maxima', 0),
-                      diag.get('n_zone_maxima', 0),
-                      diag.get('n_shape_valid', 0),
-                      diag.get('n_clustered', 0),
-                      extraction_result.stats.get('total_detected', 0)))
-        if diag.get('early_exit_stage'):
-            self._log('  CIP early exit at stage: {0}'.format(
-                diag['early_exit_stage']))
-        if 'reason' in diag:
-            self._log('  Early exit reason: {0}'.format(diag['reason']))
-        if diag.get('otsu_fallback_triggered'):
-            self._log('  WARNING: scikit-image Otsu threshold was too high, fell back to median.')
-        if extraction_result.stats.get('total_detected', 0) > 0:
-            self._log('  After narrowing: strong={0}, marginal={1}, '
-                      'rejected={2}'.format(
-                          extraction_result.stats.get('n_strong', 0),
-                          extraction_result.stats.get('n_marginal', 0),
-                          extraction_result.stats.get('n_rejected', 0)))
+            # --- Diagnostic: Extraction pipeline results ---
+            diag = extraction_result.diagnostics
+            self._log('  CIP: noise={0:.1f}, threshold={1:.1f}, spot_px={2}'.format(
+                diag.get('noise_sigma', 0),
+                diag.get('threshold_used', 0),
+                diag.get('spot_px', 0)))
+            self._log('  CIP stages: above_thr={0}, maxima={1}, in_zone={2}, '
+                      'shape_ok={3}, clustered={4}, total_det={5}'.format(
+                          diag.get('n_above_threshold', 0),
+                          diag.get('n_maxima', 0),
+                          diag.get('n_zone_maxima', 0),
+                          diag.get('n_shape_valid', 0),
+                          diag.get('n_clustered', 0),
+                          extraction_result.stats.get('total_detected', 0)))
+            if diag.get('early_exit_stage'):
+                self._log('  CIP early exit at stage: {0}'.format(
+                    diag['early_exit_stage']))
+            if 'reason' in diag:
+                self._log('  Early exit reason: {0}'.format(diag['reason']))
+            if diag.get('otsu_fallback_triggered'):
+                self._log('  WARNING: scikit-image Otsu threshold was too high, fell back to median.')
+            if extraction_result.stats.get('total_detected', 0) > 0:
+                self._log('  After narrowing: strong={0}, marginal={1}, '
+                          'rejected={2}'.format(
+                              extraction_result.stats.get('n_strong', 0),
+                              extraction_result.stats.get('n_marginal', 0),
+                              extraction_result.stats.get('n_rejected', 0)))
 
-        strong_cands = extraction_result.strong_candidates
-        self._stats['total_candidates'] += len(strong_cands)
+            strong_cands = extraction_result.strong_candidates
+            self._stats['total_candidates'] += len(strong_cands)
 
-        # 3. Filter out previously used POIs (non-repetition radius)
-        filtered_cands = self._filter_used_pois(strong_cands)
+            # 3. Filter out previously used POIs (non-repetition radius)
+            filtered_cands = self._filter_used_pois(strong_cands)
 
-        self._log('Found {0} candidates ({1} after POI filtering).'.format(
-            len(strong_cands), len(filtered_cands)))
+            self._log('Found {0} candidates ({1} after POI filtering).'.format(
+                len(strong_cands), len(filtered_cands)))
 
-        if not filtered_cands:
-            self._log('No new candidates in {0}. Completing cell.'.format(
-                self._current_region.region_id))
+            if not filtered_cands:
+                self._log('No new candidates in {0}. Completing cell.'.format(
+                    region_id_str))
+                self._complete_current_cell()
+                return
+
+            # 4. Queue filtered candidates for one-at-a-time serial processing.
+            #    HARDWARE CONSTRAINT: The verifier (optimizer/confocal) and the
+            #    pulsed measurement (pulse generator / fast counter) cannot run
+            #    concurrently.  We send candidates to the verifier ONE AT A TIME
+            #    and wait for each candidate's full lifecycle (verify → measure)
+            #    to complete before starting the next.
+            self._pending_candidates = filtered_cands
+            self._current_candidate_index = 0
+            self._pulsed_measurement_pending = False
+            self._verification_batch_done = False
+
+            self._log('Queued {0} candidates for serial verify+measure.'.format(
+                len(filtered_cands)))
+
+            # 5. Start verifying the FIRST candidate only
+            self._verify_next_candidate()
+        except Exception as e:
+            self._log('ERROR in micro scan processing: {0}'.format(e))
+            import traceback
+            traceback.print_exc()
             self._complete_current_cell()
-            return
-
-        # 4. Queue filtered candidates for one-at-a-time serial processing.
-        #    HARDWARE CONSTRAINT: The verifier (optimizer/confocal) and the
-        #    pulsed measurement (pulse generator / fast counter) cannot run
-        #    concurrently.  We send candidates to the verifier ONE AT A TIME
-        #    and wait for each candidate's full lifecycle (verify → measure)
-        #    to complete before starting the next.
-        self._pending_candidates = filtered_cands
-        self._current_candidate_index = 0
-        self._pulsed_measurement_pending = False
-        self._verification_batch_done = False
-
-        self._log('Queued {0} candidates for serial verify+measure.'.format(
-            len(filtered_cands)))
-
-        # 5. Start verifying the FIRST candidate only
-        self._verify_next_candidate()
 
     # =====================================================================
     # INTERNAL: One-at-a-time verification + serial measurement flow
@@ -1178,6 +1214,32 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
             self.confocallogic().xy_resolution = (
                 self._original_scan_params['xy_resolution'])
             self._original_scan_params = None
+
+        # Save in-progress cell if aborted before cell completion
+        if (self._cell_data_logger is not None and
+                self._current_micro_image is not None and
+                self._current_region is not None):
+            already_saved = any(
+                r.get('region_id') == self._current_region.region_id
+                for r in getattr(self._cell_data_logger, 'cell_records', []))
+            if not already_saved:
+                try:
+                    save_pdf = bool(self._val(self.save_annotated_images, True))
+                    cell_diag = self._current_cell_result.diagnostics if self._current_cell_result else {}
+                    self._cell_data_logger.save_cell_data(
+                        scan_region=self._current_region,
+                        image_data=self._current_micro_image,
+                        x_coords_m=self._current_micro_x_coords,
+                        y_coords_m=self._current_micro_y_coords,
+                        z_current_m=self._current_micro_z,
+                        verified_pois=self._current_cell_verified_pois,
+                        all_candidates=self._current_cell_candidates,
+                        cell_diagnostics=cell_diag,
+                        save_pdf=save_pdf
+                    )
+                    self._cells_completed += 1
+                except Exception as e:
+                    self.log.warning('Could not save in-progress cell data on finish: {0}'.format(e))
 
         final_stats = {
             'cells_completed': self._cells_completed,

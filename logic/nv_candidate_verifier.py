@@ -1481,6 +1481,24 @@ class NVCandidateVerifier(GenericLogic):
             attempt.get('gate_details_dict', {}), registration_status)
         self._log_and_print(acceptance_banner)
 
+        opt2 = attempt.get('optimizer2_result')
+        r2 = getattr(opt2, 'r_squared', None) if opt2 is not None else None
+        if r2 is None and isinstance(opt2, dict):
+            r2 = opt2.get('r_squared')
+        sigma = getattr(opt2, 'sigma_m', None) if opt2 is not None else None
+        if sigma is None and isinstance(opt2, dict):
+            sigma = opt2.get('sigma_m')
+        amp = getattr(opt2, 'amplitude', None) if opt2 is not None else None
+        if amp is None and isinstance(opt2, dict):
+            amp = opt2.get('amplitude')
+
+        optical_stats = {
+            'r_squared': r2,
+            'sigma_m': sigma,
+            'peak_fluorescence_cps': amp,
+            'gate_details': attempt.get('gate_details_dict', {}),
+        }
+
         accepted_record = {
             'candidate_id': candidate['candidate_id'],
             'candidate_label': candidate['candidate_label'],
@@ -1490,6 +1508,7 @@ class NVCandidateVerifier(GenericLogic):
             'operating_mode': mode,
             'region_id': candidate.get('region_id', ''),
             'overall_score': candidate.get('overall_score'),
+            'optical_stats': optical_stats,
             'stage1_attempts': candidate.get('stage1_attempts', 0),
             'final_state_attempts': candidate.get('final_state_attempts', 0),
         }
