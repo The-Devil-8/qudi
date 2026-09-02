@@ -59,6 +59,7 @@ Automates the process of locating NV centers in a diamond sample by:
 | 24 | [Full Experiment Loop](24_full_experiment_loop.md) | Multi-cell scanning, POI filtering, verification, and drift tracking loop |
 | 25 | [Algorithm Intuitions & Upgrades](25_algorithm_intuitions_and_upgrades.md) | Upgraded heuristics for ROI segmentation, noise bounding, and POI extraction |
 | 26 | [Sample Characterization Engine](26_sample_characterization_engine.md) | Intelligent pre-segmentation analyzer, router, and algorithm dueler |
+| 27 | [Cell Data Logger & Annotated Archiving](27_cell_data_logger_and_annotated_archiving.md) | Sub-pixel coordinate interpolation, annotated diagnostic figure rendering, and systematic archiving |
 
 ## Quick Start
 
@@ -66,16 +67,19 @@ Automates the process of locating NV centers in a diamond sample by:
 2. Read [16 — Testing Data Requirements](16_testing_data_requirements.md) before Phase 2+ (current 200 µm data is incomplete)
 3. Read [17 — Algorithm Optimization](17_algorithm_optimization.md) when tuning cell / ROI / CIP
 4. Read [26 — Sample Characterization Engine](26_sample_characterization_engine.md) for pre-segmentation algorithm selection
-5. Read [14 — Roadmap & Status](14_automation_roadmap_and_status.md) for executive summary
-6. Read [12 — User Guide](12_user_guide.md) for how to run today's single-scale pipeline
-7. Read [07 — Architecture](07_auto_nv_finder_architecture.md) for system design
-8. Refer to [11 — Troubleshooting](11_troubleshooting.md) if issues arise
+5. Read [27 — Cell Data Logger & Annotated Archiving](27_cell_data_logger_and_annotated_archiving.md) for data archiving and visual diagnostics
+6. Read [14 — Roadmap & Status](14_automation_roadmap_and_status.md) for executive summary
+7. Read [12 — User Guide](12_user_guide.md) for how to run today's single-scale pipeline
+8. Read [07 — Architecture](07_auto_nv_finder_architecture.md) for system design
+9. Refer to [11 — Troubleshooting](11_troubleshooting.md) if issues arise
 
 ## Related Files
 
 | File | Role |
 |------|------|
 | `logic/auto_nv_finder_logic.py` | Core automation engine (single-scale CIP → optimize → POI) |
+| `logic/multi_scale_auto_nv_finder_logic.py` | Master orchestrator for full multi-scale loop |
+| `logic/cell_data_logger.py` | Sub-pixel coordinate interpolation, annotated plot rendering, and systematic run archiving |
 | `logic/sample_characterization_engine.py` | Intelligent pre-segmentation router & algorithm dueler |
 | `logic/cell_segmentation_sparse.py` | AlgoA: Seeded hysteresis sparse cell segmentation |
 | `logic/cell_segmentation_logic.py` | AlgoB: White Top-Hat adaptive dense cell segmentation |

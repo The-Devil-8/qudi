@@ -24,15 +24,16 @@ flowchart TD
     TrackDrift --> CheckTargetCount{Target Count Reached?}
     
     CheckTargetCount -- "No" --> LoopPOI
-    CheckTargetCount -- "Yes" --> EndCell[End Current Cell]
+    CheckTargetCount -- "Yes" --> ArchiveCell[8. CellDataLogger: Interpolate & Archive Cell Close-Scan]
     
-    LoopPOI -- "No more POIs" --> EndCell
+    LoopPOI -- "No more POIs" --> ArchiveCell
+    ArchiveCell --> EndCell[End Current Cell]
     
     EndCell --> RescanCheck{Need Rescan?}
     RescanCheck -- "Yes" --> ConfocalScan
     RescanCheck -- "No" --> LoopGrid
     
-    LoopGrid -- "No more cells" --> Complete([Experiment Complete])
+    LoopGrid -- "No more cells" --> Complete([Experiment Complete: Finalize Run Manifest])
 ```
 
 ## User Input Parameters
@@ -77,7 +78,13 @@ After measurement, the system records current environmental and hardware paramet
 ### 7. Target Counting
 The global counter of successfully characterized NVs is incremented. **Crucially, only POIs that pass verification AND complete the pulsed measurement are counted towards the user's target.**
 
-### 8. Per-Cell Re-scanning
+### 8. Cell Close-Scan Pinpointing & Systematic Archiving
+Before completing a cell and advancing to the next queued region, the orchestrator invokes `CellDataLogger.save_cell_data()`:
+- Verified and measured NVs are mapped to exact sub-pixel coordinates on the close-scan image via `interpolate_physical_to_pixel`.
+- High-resolution annotated PNG (200 DPI) and vector PDF diagnostic plots are generated with dual-ring targets, badges, and side-panel manifests.
+- Raw 4-channel scan arrays (`micro_scan_raw.npz`), JSON manifests (`cell_summary.json`), and tabular POI summaries (`cell_pois.csv`) cross-referencing pulsed measurement `save_tag` identifiers are saved to `data/AutoNV_YYYYMMDD_HHMMSS_<run_id>/Cell_<region_id>_<timestamp>/`.
+
+### 9. Per-Cell Re-scanning
 If significant drift is detected during the characterization of POIs within a cell (e.g., tracking a specific NV reveals the sample has moved beyond the `Rescan Tolerance`), the current cell is marked for re-scanning. The system will discard the remaining uninvestigated POIs in the current list, acquire a new confocal scan of the cell, and find new POIs (filtering out the ones already measured).
 
 ## Future Work Items

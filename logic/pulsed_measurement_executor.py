@@ -292,8 +292,8 @@ class PulsedMeasurementExecutor(GenericLogic):
             'save_tag': self._save_tag,
             'success': success,
             'error': error,
-            'started_utc': datetime.datetime.utcfromtimestamp(self._start_time).isoformat() + "Z" if self._start_time else None,
-            'finished_utc': datetime.datetime.utcnow().isoformat() + "Z",
+            'started_utc': datetime.datetime.fromtimestamp(self._start_time, datetime.timezone.utc).isoformat() + "Z" if self._start_time else None,
+            'finished_utc': datetime.datetime.now(datetime.timezone.utc).isoformat() + "Z",
         }
         
         self._current_state = 'IDLE'

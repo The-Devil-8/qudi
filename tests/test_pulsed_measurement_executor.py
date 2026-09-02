@@ -1,5 +1,10 @@
+import os
+import sys
 import pytest
 from unittest.mock import MagicMock, PropertyMock, patch
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'logic'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 # Skip all tests if qtpy is not available
 QtCore = pytest.importorskip('qtpy.QtCore')
@@ -80,7 +85,12 @@ def test_execute_measurement_validation(executor):
 def test_state_machine_transitions(executor, mock_pml):
     executor.execute_measurement({'candidate_id': 'c1'})
     
-    # After start, it should sequence through to WAIT_LOAD_COMPLETE
+    # State sequence begins with turning pulser off
+    assert executor._current_state == 'PULSER_OFF'
+    mock_pml.toggle_pulse_generator.assert_called_with(False)
+    
+    # Advance to LOAD_MEASUREMENT -> WAIT_LOAD_COMPLETE
+    executor._transition_to('LOAD_MEASUREMENT')
     assert executor._current_state == 'WAIT_LOAD_COMPLETE'
     mock_pml.sample_ensemble.assert_called_with('test_measurement', with_load=True)
     
@@ -94,8 +104,13 @@ def test_state_machine_transitions(executor, mock_pml):
     assert executor._current_state == 'POST_SETTLE'
     mock_pml.save_measurement_data.assert_called_once()
     
-    # Simulate settle timer done -> PULSER_OFF_2 -> LOAD_LASER -> WAIT_LASER_LOADED
+    # Simulate settle timer done -> PULSER_OFF_2
     executor._on_settle_done()
+    assert executor._current_state == 'PULSER_OFF_2'
+    mock_pml.toggle_pulse_generator.assert_called_with(False)
+    
+    # Drive LOAD_LASER -> WAIT_LASER_LOADED
+    executor._transition_to('LOAD_LASER')
     assert executor._current_state == 'WAIT_LASER_LOADED'
     mock_pml.sample_ensemble.assert_called_with('test_laser', with_load=True)
     
@@ -110,7 +125,7 @@ def test_timeout_handling(executor):
     executor._fail_measurement = mock_fail
     
     executor.execute_measurement({'candidate_id': 'c1'})
-    assert executor._current_state == 'WAIT_LOAD_COMPLETE'
+    assert executor._current_state == 'PULSER_OFF'
     
     # Trigger timeout
     executor._on_timeout()

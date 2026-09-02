@@ -45,6 +45,7 @@ from logic.cell_region_processor import CellRegionProcessor
 from logic.poi_extractor import POIExtractor
 from logic.drift_tracker import DriftTracker
 from logic.z_surface_finder import ZSurfaceFinder
+from logic.cell_data_logger import CellDataLogger
 
 
 class MultiScaleAutoNVFinderLogic(GenericLogic):
@@ -103,6 +104,8 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
     max_fluorescence_counts_per_s = StatusVar(
         'max_fluorescence_counts_per_s', 8e6)     # 8 Mc/s
     max_rescans_per_cell = StatusVar('max_rescans_per_cell', 3)
+    save_annotated_images = StatusVar('save_annotated_images', True)
+    output_data_dir = StatusVar('output_data_dir', '')
 
     # =====================================================================
     # Signals for GUI and task tracking
@@ -133,11 +136,21 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
         self._poi_extractor = POIExtractor()
         self._drift_tracker = DriftTracker()
         self._z_surface_finder = ZSurfaceFinder()
+        self._cell_data_logger = None
 
         # State tracking
         self._original_scan_params = None
         self._stats = {}
         self._current_region = None
+
+        # Current cell scan data & candidates for annotation & archiving
+        self._current_micro_image = None
+        self._current_micro_x_coords = None
+        self._current_micro_y_coords = None
+        self._current_micro_z = 0.0
+        self._current_cell_result = None
+        self._current_cell_candidates = []
+        self._current_cell_verified_pois = []
 
         # POI used list — positions of all NVs that have been measured
         self._poi_used_list = []
@@ -195,9 +208,6 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
 
         self.log.info('MultiScaleAutoNVFinderLogic activated.')
         print('[MultiScaleAutoNVFinderLogic] on_activate COMPLETE')
-
-        #for adding poi b4 measurement
-        self._poimanagerlogic = self.poimanagerlogic()
 
     def on_deactivate(self):
         if self._state != 'idle':
@@ -321,7 +331,32 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
         self._total_nvs_measured = 0
         self._cell_nv_count = 0
         self._cell_rescan_count = 0
+        self._current_cell_verified_pois = []
+        self._current_cell_candidates = []
         self._drift_tracker.reset()
+
+        # Initialize systematic session data logger
+        out_dir = str(self._val(self.output_data_dir, '')).strip() or None
+        target_cells_num = int(self._val(self.target_cells, 5))
+        target_nvs_num = int(self._val(self.target_nvs_per_cell, 3))
+        pulsed_enabled = bool(self._val(self.enable_pulsed_measurement, False))
+
+        self._cell_data_logger = CellDataLogger(
+            base_data_dir=out_dir,
+            run_tag='AutoNV',
+            config_metadata={
+                'target_cells': target_cells_num,
+                'target_nvs_per_cell': target_nvs_num,
+                'enable_pulsed_measurement': pulsed_enabled,
+                'measurement_ensemble_name': str(self._val(self.measurement_ensemble_name, '')),
+                'laser_pulse_ensemble_name': str(self._val(self.laser_pulse_ensemble_name, '')),
+                'coarse_fov_um': float(self._val(self.coarse_fov_um, 200.0)),
+                'micro_resolution': int(self._val(self.micro_resolution, 200)),
+                'poi_non_repetition_radius_m': float(self._val(self.poi_non_repetition_radius_m, 1.0e-6)),
+            }
+        )
+        self._log('Initialized session data logger in: {0}'.format(
+            self._cell_data_logger.output_directory))
 
         # Save original confocal scan settings
         self._original_scan_params = {
@@ -329,10 +364,6 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
             'y_range': list(self.confocallogic().image_y_range),
             'xy_resolution': self.confocallogic().xy_resolution,
         }
-
-        target_cells_num = int(self._val(self.target_cells, 5))
-        target_nvs_num = int(self._val(self.target_nvs_per_cell, 3))
-        pulsed_enabled = bool(self._val(self.enable_pulsed_measurement, False))
 
         self._log('Starting full NV automation pipeline. '
                   'Target: {0} cells, {1} NVs/cell, '
@@ -388,6 +419,13 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
         """Safely resolve PulsedMeasurementExecutor, or return None."""
         try:
             return self.pulsedmeasurementexecutor()
+        except Exception:
+            return None
+
+    def _get_poi_manager(self):
+        """Safely resolve PoiManagerLogic, or return None."""
+        try:
+            return self.poimanagerlogic()
         except Exception:
             return None
 
@@ -493,9 +531,16 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
         self._current_region = region
         self._queue.mark_region_status(region.region_id, 'scanning')
 
-        # Reset per-cell counters
+        # Reset per-cell counters and logging arrays
         self._cell_nv_count = 0
         self._cell_rescan_count = 0
+        self._current_cell_verified_pois = []
+        self._current_cell_candidates = []
+        self._current_micro_image = None
+        self._current_micro_x_coords = None
+        self._current_micro_y_coords = None
+        self._current_micro_z = 0.0
+        self._current_cell_result = None
 
         # Emit the cropped macro region for visualization
         if hasattr(region, 'cropped_image') and region.cropped_image is not None:
@@ -558,18 +603,22 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
         y_coords = image[:, 0, 1]
         z_current = image[0, 0, 2]
 
+        self._current_micro_image = image
+        self._current_micro_x_coords = x_coords
+        self._current_micro_y_coords = y_coords
+        self._current_micro_z = z_current
+
+        # Update PoiManagerLogic scan image so GUI displays this close-scan
+        poi_mgr = self._get_poi_manager()
+        if poi_mgr is not None:
+            try:
+                poi_mgr.set_scan_image(emit_change=True)
+            except Exception as e:
+                self._log('Note: could not update POI Manager scan image: {0}'.format(e))
+
         # 1. Process cell region
         cell_result = self._cell_processor.process(image, scan_region=self._current_region)
-        
-        # Save the micro scan data
-        try:
-            save_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data', 'micro_scans')
-            os.makedirs(save_dir, exist_ok=True)
-            filename = os.path.join(save_dir, 'region_{0}_{1}.npy'.format(self._current_region.region_id, int(time.time())))
-            np.save(filename, image)
-            self._log('Saved micro scan data for region {0} to {1}'.format(self._current_region.region_id, filename))
-        except Exception as e:
-            self._log('Failed to save micro scan data: {0}'.format(e))
+        self._current_cell_result = cell_result
 
         # --- Diagnostic: Cell processor results ---
         fluor = image[:, :, 3]
@@ -602,6 +651,9 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
         extraction_result = self._poi_extractor.extract(
             cell_result, image, x_coords=x_coords, y_coords=y_coords,
             z_current=z_current, scan_region=self._current_region)
+
+        self._current_cell_candidates = getattr(
+            extraction_result, 'all_candidates', extraction_result.candidates)
 
         # --- Diagnostic: Extraction pipeline results ---
         diag = extraction_result.diagnostics
@@ -641,20 +693,9 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
             len(strong_cands), len(filtered_cands)))
 
         if not filtered_cands:
-            self._log('No new candidates in {0}. Moving to next '
-                      'region.'.format(self._current_region.region_id))
-            self._queue.mark_region_status(
-                self._current_region.region_id, 'processed',
-                nv_candidates_found=0)
-            self._stats['regions_processed'] += 1
-            self._cells_completed += 1
-            self.sigCellComplete.emit(
-                self._current_region.region_id, self._cell_nv_count)
-            self.sigQueueUpdated.emit(
-                self._stats['regions_processed'],
-                self._queue.queued_count + self._stats['regions_processed'])
-            self._emit_progress()
-            QtCore.QTimer.singleShot(0, self._process_next_region)
+            self._log('No new candidates in {0}. Completing cell.'.format(
+                self._current_region.region_id))
+            self._complete_current_cell()
             return
 
         # 4. Queue filtered candidates for one-at-a-time serial processing.
@@ -751,8 +792,31 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
 
         candidate_id = accepted_record.get('candidate_id', 'unknown')
         position = accepted_record.get('accepted_position_m', [0, 0, 0])
+        poi_name = accepted_record.get('poi_name') or 'NV_{0}_{1}'.format(
+            self._current_region.region_id if self._current_region else 'R0', candidate_id)
 
-        self._poimanagerlogic.add_poi(position)
+        # Ensure POI is registered in PoiManagerLogic if not already done by verifier
+        poi_mgr = self._get_poi_manager()
+        if poi_mgr is not None and accepted_record.get('registration_status') != 'registered':
+            try:
+                if poi_name not in poi_mgr.poi_names:
+                    poi_mgr.add_poi(position=np.array(position), name=poi_name)
+            except Exception as e:
+                self._log('Note: POI registration in PoiManagerLogic: {0}'.format(e))
+
+        # Record candidate in current cell's verified POI list for annotation & archiving
+        poi_entry = {
+            'candidate_id': candidate_id,
+            'poi_name': poi_name,
+            'accepted_position_m': list(position),
+            'seed_position_m': accepted_record.get('seed_position_m', list(position)),
+            'region_id': accepted_record.get('region_id', self._current_region.region_id if self._current_region else ''),
+            'overall_score': accepted_record.get('overall_score'),
+            'optical_stats': accepted_record.get('optical_stats', {}),
+            'pulsed_measurement': None,
+            'timestamp': time.strftime('%Y-%m-%dT%H:%M:%S'),
+        }
+        self._current_cell_verified_pois.append(poi_entry)
 
         self._log('Candidate {0} optically verified at [{1:.2f}, '
                   '{2:.2f}, {3:.2f}] um.'.format(
@@ -911,6 +975,13 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
     def _register_measured_nv(self, accepted_record, measurement_result):
         """Register an NV as successfully measured."""
         position = accepted_record.get('accepted_position_m', [0, 0, 0])
+        cand_id = accepted_record.get('candidate_id', '')
+
+        # Update current cell verified POI record with measurement result
+        for poi in self._current_cell_verified_pois:
+            if poi.get('candidate_id') == cand_id:
+                poi['pulsed_measurement'] = measurement_result
+                break
 
         # Append to POI used list for non-repetition filtering
         self._poi_used_list.append(list(position))
@@ -922,7 +993,7 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
 
         # Store measurement result
         nv_record = {
-            'candidate_id': accepted_record.get('candidate_id', ''),
+            'candidate_id': cand_id,
             'poi_name': accepted_record.get('poi_name', ''),
             'position_m': list(position),
             'region_id': accepted_record.get('region_id', ''),
@@ -935,7 +1006,7 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
 
         self._log('NV {0} registered! (Cell {1}: {2}/{3} NVs, '
                   'Total: {4})'.format(
-                      accepted_record.get('candidate_id', ''),
+                      cand_id,
                       self._cells_completed + 1,
                       self._cell_nv_count,
                       target_nvs,
@@ -982,24 +1053,52 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
         QtCore.QTimer.singleShot(0, self._verify_next_candidate)
 
     def _complete_current_cell(self):
-        """Mark the current cell as done and advance to the next region."""
+        """Mark the current cell as done, save annotated close-scan data, and advance to the next region."""
         target_nvs = int(self._val(self.target_nvs_per_cell, 3))
+        region_id_str = self._current_region.region_id if self._current_region else 'unknown'
         self._log('Cell {0} complete. NVs measured: {1}/{2}'.format(
-            self._current_region.region_id,
-            self._cell_nv_count, target_nvs))
+            region_id_str, self._cell_nv_count, target_nvs))
 
-        self._queue.mark_region_status(
-            self._current_region.region_id, 'processed',
-            nv_candidates_found=self._cell_nv_count)
-        self._stats['regions_processed'] += 1
-        self._cells_completed += 1
+        # Save annotated close-scan image and systematic cell data
+        if (self._cell_data_logger is not None and
+                self._current_micro_image is not None and
+                self._current_region is not None):
+            try:
+                save_pdf = bool(self._val(self.save_annotated_images, True))
+                cell_diag = self._current_cell_result.diagnostics if self._current_cell_result else {}
+                cell_summary = self._cell_data_logger.save_cell_data(
+                    scan_region=self._current_region,
+                    image_data=self._current_micro_image,
+                    x_coords_m=self._current_micro_x_coords,
+                    y_coords_m=self._current_micro_y_coords,
+                    z_current_m=self._current_micro_z,
+                    verified_pois=self._current_cell_verified_pois,
+                    all_candidates=self._current_cell_candidates,
+                    cell_diagnostics=cell_diag,
+                    save_pdf=save_pdf
+                )
+                self._log('Archived cell {0} data & annotated close-scan plot ({1} verified NVs) to: {2}'.format(
+                    region_id_str,
+                    len(self._current_cell_verified_pois),
+                    cell_summary.get('cell_folder', '')))
+                self.sigVisualUpdate.emit('Cell POIs Annotated', cell_summary)
+            except Exception as e:
+                self._log('WARNING: Could not save annotated cell data: {0}'.format(e))
+                traceback.print_exc()
 
-        self.sigCellComplete.emit(
-            self._current_region.region_id, self._cell_nv_count)
-        self.sigQueueUpdated.emit(
-            self._stats['regions_processed'],
-            self._queue.queued_count + self._stats['regions_processed'])
-        self._emit_progress()
+        if self._current_region is not None:
+            self._queue.mark_region_status(
+                self._current_region.region_id, 'processed',
+                nv_candidates_found=self._cell_nv_count)
+            self._stats['regions_processed'] += 1
+            self._cells_completed += 1
+
+            self.sigCellComplete.emit(
+                self._current_region.region_id, self._cell_nv_count)
+            self.sigQueueUpdated.emit(
+                self._stats['regions_processed'],
+                self._queue.queued_count + self._stats['regions_processed'])
+            self._emit_progress()
 
         # Advance to the next region
         QtCore.QTimer.singleShot(0, self._process_next_region)
@@ -1090,6 +1189,17 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
             'drift_records': len(self._drift_tracker.records),
             'reason': reason,
         }
+
+        # Finalize data logger session
+        if self._cell_data_logger is not None:
+            try:
+                run_report = self._cell_data_logger.finalize_run(
+                    run_stats=final_stats, final_reason=reason)
+                out_dir = run_report.get('output_directory', '')
+                self._log('Experiment run finalized. Manifest and master POI list saved in:\n  {0}'.format(out_dir))
+                final_stats['output_directory'] = out_dir
+            except Exception as e:
+                self.log.warning('Could not finalize run in CellDataLogger: {0}'.format(e))
 
         self._set_state('idle')
         self.sigMultiScaleComplete.emit(final_stats)

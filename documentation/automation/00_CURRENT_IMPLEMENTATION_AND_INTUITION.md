@@ -35,7 +35,12 @@
    - Signal connections to `NVCandidateVerifier` and `PulsedMeasurementExecutor` are established once in `on_activate()` and torn down in `on_deactivate()`.  Per-batch connect/disconnect is not used (it caused duplicate handlers and leaked connections on error paths).
    - Tracks per-cell NV targets (default 2-3), total cell targets, drift records, and measurement results.
    - POI non-repetition filtering removes candidates within 1 µm of previously measured NVs.
-8. **Z-Scan Surface Finding** (`logic/z_surface_finder.py`) — **STUB**
+8. **Cell Data Logging & Annotated Archiving** (`logic/cell_data_logger.py`) — **DONE**
+   - Exact sub-pixel coordinate interpolation (`interpolate_physical_to_pixel`, `interpolate_pixel_to_physical`) mapping continuous scanner positions onto the close-scan grid.
+   - Generates 200 DPI annotated diagnostic figures (`.png` and vector `.pdf`) pinpointing verified NVs with status badges (Green = Pulsed OK, Yellow = Pulsed Failed, Cyan = Optically Verified Only).
+   - Systematic archiving in `data/AutoNV_YYYYMMDD_HHMMSS_<run_id>/Cell_<region_id>_<timestamp>/` containing raw `.npz`, `.json` summary, cell `.csv`, top-level `run_manifest.json`, and master `run_all_pois.csv`.
+   - 1:1 cross-referencing between close-scan images and pulsed measurement files via `save_tag`.
+9. **Z-Scan Surface Finding** (`logic/z_surface_finder.py`) — **STUB**
    - Documented interface for next iteration: full Z scan → find bright surface layer (top 2% = "cream") → compute target depth Z = Z_SL - Z_depth.
    - `compute_target_depth()` is functional; `find_surface()` raises `NotImplementedError`.
 
@@ -88,6 +93,11 @@ This design also eliminates three classes of synchronization bugs:
 1. **Race between deferred transitions and async callbacks** in `PulsedMeasurementExecutor` — fixed by setting wait states *before* async calls.
 2. **Candidate acceptance flooding** — eliminated because only one candidate is verified at a time, so at most one `sigCandidateAccepted` can fire before the orchestrator explicitly dispatches the next.
 3. **Signal connection leaks** — eliminated by connecting verifier/executor signals once in `on_activate()` instead of per-batch.
+
+### 2.7 Subpixel Coordinate Interpolation & Systematic Close-Scan Archiving
+Because stage refocusing and optical Gaussian fitting yield continuous sub-micron physical coordinates $(x_\text{phys}, y_\text{phys})$, pinpointing verified NVs on the close-scan image grid requires exact subpixel mapping.
+- **Interpolation**: `CellDataLogger.interpolate_physical_to_pixel` maps physical coordinates onto the image grid based on the scanner's monotonic 1D coordinate arrays.
+- **Cross-Referencing**: Each pulsed measurement generates a `save_tag` (`auto_nv_<candidate_id>_<run_id[:8]>`) which is stored in `cell_summary.json`, `cell_pois.csv`, and annotated directly on the diagnostic plot. This provides 1:1 traceability between close-scan fluorescence images and downstream pulsed measurement `.dat`/`.png` files.
 
 ## 3. Immediate Next Steps
 

@@ -174,3 +174,129 @@ class TestMultiScaleOrchestrator:
         # It should process R1, see max_regions_per_run = 1 is reached (processed=1), and stop.
         assert logic._stats['regions_processed'] == 1
         assert logic._state == 'idle'
+
+    def test_poi_manager_scan_image_update(self, logic):
+        # Mock POI Manager connector
+        mock_poi_mgr = MagicMock()
+        logic.poimanagerlogic = MagicMock(return_value=mock_poi_mgr)
+        logic.sigVisualUpdate = MagicMock()
+
+        # Set up a region and scan image
+        mock_region = ScanRegion('R1', bbox_physical=(-5e-6, 5e-6, -5e-6, 5e-6), width_um=10.0, height_um=10.0)
+        logic._current_region = mock_region
+        logic._state = 'micro_scanning'
+
+        fake_image = np.zeros((20, 20, 4))
+        fake_image[0, :, 0] = np.linspace(-5e-6, 5e-6, 20)
+        fake_image[:, 0, 1] = np.linspace(-5e-6, 5e-6, 20)
+        fake_image[:, :, 3] = 30000
+
+        logic.confocallogic().xy_image = fake_image
+
+        logic._cell_processor.process = MagicMock(return_value=MagicMock(
+            diagnostics={}, zone_stats={'processable': True}))
+        extraction_result = MagicMock()
+        extraction_result.strong_candidates = []
+        extraction_result.candidates = []
+        extraction_result.diagnostics = {}
+        extraction_result.stats = {'total_detected': 0}
+        logic._poi_extractor.extract = MagicMock(return_value=extraction_result)
+
+        logic._on_micro_scan_complete()
+
+        # Verify POI Manager scan image was updated
+        mock_poi_mgr.set_scan_image.assert_called_once_with(emit_change=True)
+
+    def test_cell_archiving_and_poi_tracking(self, logic, tmp_path):
+        # Set temporary data output directory
+        MultiScaleAutoNVFinderLogic.output_data_dir = str(tmp_path)
+        MultiScaleAutoNVFinderLogic.enable_pulsed_measurement = True
+
+        mock_executor = MagicMock()
+        logic.pulsedmeasurementexecutor = MagicMock(return_value=mock_executor)
+
+        logic.sigVisualUpdate = MagicMock()
+        logic.sigNVMeasured = MagicMock()
+        logic.sigCellComplete = MagicMock()
+        logic.confocallogic().start_scanning = MagicMock()
+
+        # Start run to initialize CellDataLogger
+        logic.start_multi_scale_find()
+        assert logic._cell_data_logger is not None
+
+        # Simulate micro scan on region R001
+        region = ScanRegion('R001', bbox_physical=(-10e-6, 10e-6, -10e-6, 10e-6), width_um=20.0, height_um=20.0)
+        logic._current_region = region
+        logic._state = 'micro_scanning'
+
+        fake_image = np.zeros((30, 30, 4))
+        fake_image[0, :, 0] = np.linspace(-10e-6, 10e-6, 30)
+        fake_image[:, 0, 1] = np.linspace(-10e-6, 10e-6, 30)
+        fake_image[:, :, 3] = 40000
+        logic.confocallogic().xy_image = fake_image
+
+        logic._cell_processor.process = MagicMock(return_value=MagicMock(
+            diagnostics={'cell_area_px': 500}, zone_stats={'processable': True}))
+        extraction_result = MagicMock()
+        extraction_result.strong_candidates = [{'candidate_id': 'POI-001', 'x': 2e-6, 'y': 3e-6}]
+        extraction_result.candidates = extraction_result.strong_candidates
+        extraction_result.diagnostics = {}
+        extraction_result.stats = {'total_detected': 1, 'n_strong': 1}
+        logic._poi_extractor.extract = MagicMock(return_value=extraction_result)
+
+        # Mock verifier verify_batch
+        logic.nvcandidateverifier().verify_batch = MagicMock()
+
+        logic._on_micro_scan_complete()
+
+        assert len(logic._pending_candidates) == 1
+        assert logic._current_micro_image is not None
+
+        # Simulate candidate accepted by verifier
+        accepted_record = {
+            'candidate_id': 'POI-001',
+            'poi_name': 'NV_R001_POI-001',
+            'accepted_position_m': [2e-6, 3e-6, 1e-6],
+            'region_id': 'R001',
+            'overall_score': 0.92,
+            'optical_stats': {'r_squared': 0.95, 'sigma_m': [0.2e-6, 0.2e-6], 'peak_fluorescence_cps': 150000},
+            'registration_status': 'registered',
+        }
+        logic._on_candidate_accepted(accepted_record)
+
+        assert len(logic._current_cell_verified_pois) == 1
+        assert logic._current_cell_verified_pois[0]['candidate_id'] == 'POI-001'
+
+        # Simulate pulsed measurement complete
+        measurement_result = {
+            'success': True,
+            'save_tag': 'auto_nv_POI-001_run123',
+            'measurement_ensemble': 'T1_test',
+            'elapsed_s': 30.0,
+            'run_id': 'run123',
+        }
+        logic._current_measurement_candidate = accepted_record
+        logic._on_measurement_complete(measurement_result)
+
+        assert logic._cell_nv_count == 1
+        assert logic._current_cell_verified_pois[0]['pulsed_measurement']['save_tag'] == 'auto_nv_POI-001_run123'
+
+        # Complete the cell and verify data logging
+        logic._complete_current_cell()
+
+        # Check that files were created in session directory
+        session_dir = logic._cell_data_logger.output_directory
+        cell_dirs = [d for d in os.listdir(session_dir) if d.startswith('Cell_R001')]
+        assert len(cell_dirs) == 1
+
+        cell_path = os.path.join(session_dir, cell_dirs[0])
+        assert os.path.exists(os.path.join(cell_path, 'micro_scan_annotated.png'))
+        assert os.path.exists(os.path.join(cell_path, 'micro_scan_raw.npz'))
+        assert os.path.exists(os.path.join(cell_path, 'cell_summary.json'))
+        assert os.path.exists(os.path.join(cell_path, 'cell_pois.csv'))
+
+        # Finish run and verify manifest
+        logic._finish('Test finished')
+        assert os.path.exists(os.path.join(session_dir, 'run_all_pois.csv'))
+        assert os.path.exists(os.path.join(session_dir, 'run_manifest.json'))
+
