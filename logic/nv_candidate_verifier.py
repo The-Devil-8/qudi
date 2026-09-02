@@ -583,17 +583,16 @@ def is_worthy_analysis(analysis, min_r_squared=0.6,
 
 
 def format_gate_failures_text(gate_details_list):
-    """Format a bulleted list of failed gates with measured values, criteria, and reasons."""
+    """Format a bulleted list of failed gates with measured values and reasons."""
     failed_entries = [d for d in gate_details_list if not d.get('passed', True)]
     if not failed_entries:
         return '    (None - all evaluated gates passed)'
     lines = []
     for index, entry in enumerate(failed_entries, 1):
         lines.append('    [{0}] {1}:'.format(index, entry.get('label', entry.get('gate_name'))))
-        lines.append('        * Measured Value   : {0}'.format(entry.get('measured_value', 'N/A')))
-        lines.append('        * Passing Criteria : {0}'.format(entry.get('passing_criteria', 'N/A')))
+        lines.append('        * Measured Value : {0}'.format(entry.get('measured_value', 'N/A')))
         if entry.get('reason'):
-            lines.append('        * Failure Reason   : {0}'.format(entry.get('reason')))
+            lines.append('        * Failure Reason : {0}'.format(entry.get('reason')))
     return '\n'.join(lines)
 
 
@@ -606,9 +605,8 @@ def format_attempt_metrics_summary(candidate_id, stage, attempt_number, max_atte
     ]
     for entry in details:
         status_tag = '[PASS]' if entry.get('passed') else '[FAIL]'
-        lines.append('    {0:<6} {1:<30} : {2} (Criteria: {3})'.format(
-            status_tag, entry.get('label', ''), entry.get('measured_value', ''),
-            entry.get('passing_criteria', '')))
+        lines.append('    {0:<6} {1:<30} : {2}'.format(
+            status_tag, entry.get('label', ''), entry.get('measured_value', '')))
     return '\n'.join(lines)
 
 
@@ -648,26 +646,6 @@ def format_candidate_rejection_banner(candidate, stage, attempts_used, max_attem
         lines.append(format_gate_failures_text(final_gate_details.get('details', [])))
     else:
         lines.append('    (No individual gate failed; non-scan / budget condition)')
-
-    if attempt_history:
-        lines.append('')
-        lines.append('  ATTEMPT PROGRESSION HISTORY ({0} attempts):'.format(len(attempt_history)))
-        for att in attempt_history:
-            att_num = att.get('attempt_number', '?')
-            att_stage = att.get('stage', '?')
-            att_outcome = att.get('outcome', '?')
-            att_failures = att.get('gate_failures', [])
-            att_analysis = att.get('optimizer2_xy', {})
-            r2 = att_analysis.get('r_squared')
-            r2_s = '{0:.3f}'.format(r2) if r2 is not None else 'N/A'
-            sigma = att_analysis.get('sigma_m') or [None, None]
-            sx_s = '{0:.1f}'.format(sigma[0] * 1e9) if sigma[0] is not None else 'N/A'
-            sy_s = '{0:.1f}'.format(sigma[1] * 1e9) if sigma[1] is not None else 'N/A'
-            dist = att.get('poi_gaussian_distance_xy_m')
-            dist_s = '{0:.1f} nm'.format(dist * 1e9) if dist is not None else 'N/A'
-            fail_str = ', '.join(att_failures) if att_failures else 'none (all passed)'
-            lines.append('    * Attempt {0} ({1}): Outcome={2} | Failed Gates=[{3}] | R2={4}, sigma=({5}, {6}) nm, Distance={7}'.format(
-                att_num, att_stage, att_outcome, fail_str, r2_s, sx_s, sy_s, dist_s))
 
     lines.append(sep_thick)
     return '\n'.join(lines)
@@ -987,7 +965,7 @@ class NVCandidateVerifier(GenericLogic):
         self._log_and_print(
             "[NVCandidateVerifier] Starting verification batch: {0} candidate(s) | Mode: '{1}'\n"
             "  Policy parameters: Stage 1 max attempts={2}, Stage 2 max attempts={3}, "
-            "min R²={4:.2f}, sigma range=[{5:.1f}, {6:.1f}] nm, fluorescence range=[{7}, {8}] kc/s, "
+            "min R2={4:.2f}, sigma range=[{5:.1f}, {6:.1f}] nm, fluorescence range=[{7}, {8}] kc/s, "
             "center tolerance={9:.1f} nm".format(
                 len(records), self._effective_mode(), int(self.stage1_max_attempts),
                 int(self.stage2_max_attempts), float(self.worthy_min_xy_r_squared),
@@ -1075,20 +1053,18 @@ class NVCandidateVerifier(GenericLogic):
         self._attempt_started_utc = _utc_timestamp()
         self._timeout_requested = False
         candidate['status'] = 'scanning_{0}'.format(self._current_stage)
-
-        self._log_and_print(
-            "\n[NVCandidateVerifier] >>> Scanning Candidate '{0}' ({1}/{2}) | Stage: {3} | Attempt {4}/{5} <<<\n"
-            "  Seed position: [{6:.3f}, {7:.3f}, {8:.3f}] µm | Caller tag: {9}".format(
-                candidate['candidate_id'],
-                self._current_index + 1,
-                len(self._batch['candidates']),
-                self._current_stage,
-                attempt_number,
-                self._stage_max_attempts(self._current_stage),
-                candidate['current_seed_position_m'][0] * 1e6,
-                candidate['current_seed_position_m'][1] * 1e6,
-                candidate['current_seed_position_m'][2] * 1e6,
-                self._active_tag))
+        if hasattr(self, 'log'):
+            self.log.info(
+                "Scanning Candidate '{0}' ({1}/{2}) | Stage: {3} | Attempt {4}/{5} | Seed: [{6:.3f}, {7:.3f}, {8:.3f}] um".format(
+                    candidate['candidate_id'],
+                    self._current_index + 1,
+                    len(self._batch['candidates']),
+                    self._current_stage,
+                    attempt_number,
+                    self._stage_max_attempts(self._current_stage),
+                    candidate['current_seed_position_m'][0] * 1e6,
+                    candidate['current_seed_position_m'][1] * 1e6,
+                    candidate['current_seed_position_m'][2] * 1e6))
 
         self.sigVerificationProgress.emit(self._batch['run_id'], candidate['candidate_id'],
                                           attempt_number,
@@ -1243,14 +1219,11 @@ class NVCandidateVerifier(GenericLogic):
         gate_details = gate_details_dict['details']
         gate_failure_details = [d for d in gate_details if not d.get('passed', True)]
 
-        # Log attempt metrics summary and failure details
-        summary_msg = format_attempt_metrics_summary(
-            candidate['candidate_id'], self._current_stage, attempt_number,
-            self._stage_max_attempts(self._current_stage), gate_details_dict)
-        self._log_and_print(summary_msg)
-
-        if gate_failure_details:
-            self._log_and_print("  Failed Gate Details on this attempt:\n" + format_gate_failures_text(gate_details))
+        if hasattr(self, 'log'):
+            self.log.debug(
+                "Candidate '{0}' attempt {1} gate failures: {2}".format(
+                    candidate['candidate_id'], attempt_number,
+                    ','.join(final_gate_failures) if final_gate_failures else 'none'))
 
         worthy_candidate = len(analysis_gate_failures(
             analysis, float(self.worthy_min_xy_r_squared), self._sigma_range_m(),
@@ -1406,16 +1379,16 @@ class NVCandidateVerifier(GenericLogic):
             if bool(attempt.get('worthy_candidate')):
                 candidate['stage'] = 'final_state'
                 candidate['status'] = 'enter_final_state'
-                self._log_and_print(
-                    "[NVCandidateVerifier] Candidate '{0}' PASSED Stage 1 WorthyCandidate! Advancing to Stage 2 (final_state)...".format(
-                        candidate['candidate_id']))
+                if hasattr(self, 'log'):
+                    self.log.info(
+                        "Candidate '{0}' passed Stage 1 WorthyCandidate; advancing to Stage 2...".format(
+                            candidate['candidate_id']))
                 return 'enter_final_state'
             if int(candidate.get('stage1_attempts', 0)) >= int(self.stage1_max_attempts):
                 candidate['status'] = 'rejected'
                 rejection_banner = format_candidate_rejection_banner(
                     candidate, 'stage1', int(candidate.get('stage1_attempts', 0)),
-                    int(self.stage1_max_attempts), attempt.get('gate_details_dict', {}),
-                    attempt_history=candidate.get('attempts', []))
+                    int(self.stage1_max_attempts), attempt.get('gate_details_dict', {}))
                 self._log_and_print(rejection_banner, level='warning')
                 rejection_reason = 'stage1_budget_exhausted:{0}'.format(
                     ','.join(attempt.get('gate_failures', [])))
@@ -1427,10 +1400,11 @@ class NVCandidateVerifier(GenericLogic):
                 self.sigCandidateRejected.emit(dict(candidate))
                 return 'rejected'
             failed_str = ', '.join(attempt.get('gate_failures', [])) or 'unresolved'
-            self._log_and_print(
-                "[NVCandidateVerifier] Candidate '{0}' Stage 1 attempt {1}/{2} failed gates [{3}]. Retrying next attempt...".format(
-                    candidate['candidate_id'], int(candidate.get('stage1_attempts', 0)),
-                    int(self.stage1_max_attempts), failed_str))
+            if hasattr(self, 'log'):
+                self.log.info(
+                    "Candidate '{0}' Stage 1 attempt {1}/{2} failed gates [{3}]. Retrying next attempt...".format(
+                        candidate['candidate_id'], int(candidate.get('stage1_attempts', 0)),
+                        int(self.stage1_max_attempts), failed_str))
             return 'retry'
 
         if attempt.get('stage') == 'final_state':
@@ -1440,8 +1414,7 @@ class NVCandidateVerifier(GenericLogic):
                 candidate['status'] = 'rejected'
                 rejection_banner = format_candidate_rejection_banner(
                     candidate, 'final_state', int(candidate.get('final_state_attempts', 0)),
-                    int(self.stage2_max_attempts), attempt.get('gate_details_dict', {}),
-                    attempt_history=candidate.get('attempts', []))
+                    int(self.stage2_max_attempts), attempt.get('gate_details_dict', {}))
                 self._log_and_print(rejection_banner, level='warning')
                 rejection_reason = 'final_state_budget_exhausted:{0}'.format(
                     ','.join(attempt.get('gate_failures', [])))
@@ -1453,10 +1426,11 @@ class NVCandidateVerifier(GenericLogic):
                 self.sigCandidateRejected.emit(dict(candidate))
                 return 'rejected'
             failed_str = ', '.join(attempt.get('gate_failures', [])) or 'unresolved'
-            self._log_and_print(
-                "[NVCandidateVerifier] Candidate '{0}' Stage 2 attempt {1}/{2} failed gates [{3}]. Retrying next attempt...".format(
-                    candidate['candidate_id'], int(candidate.get('final_state_attempts', 0)),
-                    int(self.stage2_max_attempts), failed_str))
+            if hasattr(self, 'log'):
+                self.log.info(
+                    "Candidate '{0}' Stage 2 attempt {1}/{2} failed gates [{3}]. Retrying next attempt...".format(
+                        candidate['candidate_id'], int(candidate.get('final_state_attempts', 0)),
+                        int(self.stage2_max_attempts), failed_str))
             return 'retry'
 
         self._finalize_logged_candidate(candidate, 'unresolved',

@@ -856,10 +856,11 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
         print('[MultiScaleAutoNVFinderLogic] Candidate {0} REJECTED. Reason: {1}'.format(cand_id, reason))
         if details:
             for d in details:
-                detail_str = '  • {0}: Measured {1} | Passing Criteria: {2}'.format(
+                reason_str = ' -> ' + d['reason'] if d.get('reason') else ''
+                detail_str = '  * {0}: {1}{2}'.format(
                     d.get('label', d.get('gate_name', '')),
                     d.get('measured_value', ''),
-                    d.get('passing_criteria', ''))
+                    reason_str)
                 self._log(detail_str)
                 print(detail_str)
 

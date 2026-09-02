@@ -260,9 +260,8 @@ def test_rejection_banner_formats_failed_gates_values_and_history():
     assert 'POI-test-01' in banner
     assert 'R2 Goodness of Fit' in banner
     assert '0.3500' in banner
-    assert '0.6000' in banner
     assert 'Peak Fluorescence Count Rate' in banner
     assert '25.0 kc/s' in banner
-    assert '50.0 kc/s' in banner
-    assert 'ATTEMPT PROGRESSION HISTORY' in banner
+    assert 'ATTEMPT PROGRESSION HISTORY' not in banner
+
 
