@@ -99,6 +99,21 @@ Because stage refocusing and optical Gaussian fitting yield continuous sub-micro
 - **Interpolation**: `CellDataLogger.interpolate_physical_to_pixel` maps physical coordinates onto the image grid based on the scanner's monotonic 1D coordinate arrays.
 - **Cross-Referencing**: Each pulsed measurement generates a `save_tag` (`auto_nv_<candidate_id>_<run_id[:8]>`) which is stored in `cell_summary.json`, `cell_pois.csv`, and annotated directly on the diagnostic plot. This provides 1:1 traceability between close-scan fluorescence images and downstream pulsed measurement `.dat`/`.png` files.
 
+### 2.8 Temporary Hardware Shift Compensation (Test Calibration: -X/20)
+> [!NOTE]
+> **Temporary for Hardware Testing**: This calibration compensates for an observed physical positioning discrepancy during live hardware test runs.
+
+- **Observed Hardware Error**: When clicking or targeting an optical spot on the close-scan image, a physical offset was observed (*"clicking in left we get the actual, so -ve"*).
+- **Correction Mechanism**:
+  1. `CellRegionProcessor` computes the current cell region's physical X-axis range $X = \text{np.ptp}(x_\text{coords})$.
+  2. Before dispatching each candidate to `NVCandidateVerifier` in `MultiScaleAutoNVFinderLogic._verify_next_candidate()`, a negative shift of $-X/20$ (`shift_fraction = -0.05`) is added to the seed position:
+     $$x_\text{seed} = x_\text{detected} + \Delta x = x_\text{detected} - \frac{X}{20}$$
+  3. The unshifted detection coordinate is retained in `candidate.x_uncalibrated` for 1:1 image overlay and auditability.
+- **Configurability**:
+  - `enable_hardware_x_shift`: StatusVar / config parameter (default `True`).
+  - `hardware_x_shift_fraction`: StatusVar / config parameter (default `-0.05`).
+  Can be toggled or tuned without code modifications. Once physical scanner alignment is permanently rectified, `enable_hardware_x_shift` can be set to `False`.
+
 ## 3. Immediate Next Steps
 
 1. Run the full pipeline in `hybrid` mode on a known sample with `enable_pulsed_measurement: True` to validate the serial verify→measure flow end-to-end.  Confirm no "Cannot start measurement while one is already active" errors.

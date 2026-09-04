@@ -91,6 +91,8 @@ class CellProcessingResult:
         self.nucleus_stats = {}
         self.bright_cluster_stats = []
         self.diagnostics = {}
+        self.x_range = 0.0
+        self.hardware_x_shift = 0.0
 
 
 # ======================================================================
@@ -126,7 +128,31 @@ class CellRegionProcessor:
     """
 
     def __init__(self):
-        pass
+        self.last_x_range = 0.0
+
+    @property
+    def x_range(self):
+        """Return the physical X-axis range (in metres) of the most recently processed cell region."""
+        return getattr(self, 'last_x_range', 0.0)
+
+    def compute_hardware_x_shift(self, fraction=-1.0 / 20.0, x_range=None):
+        """Compute temporary hardware X-shift to compensate for position discrepancy.
+
+        Parameters
+        ----------
+        fraction : float, optional
+            Shift fraction of the X range (default -1/20 = -0.05).
+        x_range : float, optional
+            Physical X-range in metres. Defaults to ``self.x_range``.
+
+        Returns
+        -------
+        float
+            Hardware shift in metres to be added to candidate X position.
+        """
+        if x_range is None:
+            x_range = self.x_range
+        return float(fraction * x_range)
 
     # ------------------------------------------------------------------
     # Main processing entry point
@@ -224,6 +250,28 @@ class CellRegionProcessor:
         y_coords = image[:, 0, 1]
         ny, nx = fluor.shape
         result = CellProcessingResult((ny, nx))
+
+        # Determine physical X-axis range of current Cell Region
+        x_range = 0.0
+        if x_coords is not None and len(x_coords) > 1:
+            ptp_val = float(np.ptp(x_coords))
+            if ptp_val > 0:
+                x_range = ptp_val
+        if x_range == 0.0 and scan_region is not None:
+            if hasattr(scan_region, 'bbox_physical') and scan_region.bbox_physical is not None:
+                x_min, x_max = scan_region.bbox_physical[0], scan_region.bbox_physical[1]
+                x_range = float(abs(x_max - x_min))
+            if x_range == 0.0 and getattr(scan_region, 'width_um', 0.0) > 0:
+                x_range = float(scan_region.width_um) * 1e-6
+
+        result.x_range = x_range
+        self.last_x_range = x_range
+        result.diagnostics['x_range'] = x_range
+
+        # Temporary hardware shift (-X/20) for testing
+        hardware_shift = self.compute_hardware_x_shift(fraction=-1.0 / 20.0, x_range=x_range)
+        result.hardware_x_shift = hardware_shift
+        result.diagnostics['hardware_x_shift'] = hardware_shift
 
         # --- Stage 1: Detect cell interior ---
         cell_mask = self._detect_cell_interior(

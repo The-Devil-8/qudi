@@ -190,12 +190,18 @@ def test_poi_candidate_creation():
     assert c.classification == 'pending'
     assert c.overall_score == 0.0
     assert c.rank == 0
+    assert c.x_shift == 0.0
+    assert c.x_uncalibrated == 1e-6
+    assert c.x_range == 0.0
     assert c.candidate_id.startswith('POI-')
     assert len(c.candidate_id) == 10  # 'POI-' + 6 hex chars
 
     d = c.to_dict()
     assert d['x'] == 1e-6
     assert d['intensity'] == 50000
+    assert d['x_shift'] == 0.0
+    assert d['x_uncalibrated'] == 1e-6
+    assert d['x_range'] == 0.0
     assert 'overall_score' in d
     assert 'classification' in d
     print('  PASS: test_poi_candidate_creation')
@@ -212,6 +218,18 @@ def test_poi_extraction_result_creation():
     assert r.stats['n_strong'] == 0
     assert r.diagnostics['noise_sigma'] == 0.0
     print('  PASS: test_poi_extraction_result_creation')
+
+
+def test_candidate_x_range_propagation():
+    """Candidates should receive parent Cell Region x_range from cell_result."""
+    image, _, cell_result = make_synthetic_cell_image(size=120, n_nvs=3, seed=123)
+    cell_result.x_range = 45.0e-6
+    extractor = POIExtractor()
+    result = extractor.extract(cell_result, image)
+    assert len(result.candidates) > 0
+    for cand in result.candidates:
+        assert abs(cand.x_range - 45.0e-6) < 1e-9
+    print('  PASS: test_candidate_x_range_propagation')
 
 
 # ===================================================================

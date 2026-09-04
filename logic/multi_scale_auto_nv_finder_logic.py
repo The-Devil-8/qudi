@@ -29,6 +29,7 @@ import logging
 import traceback
 import time
 import os
+import copy
 import numpy as np
 from qtpy import QtCore
 
@@ -107,6 +108,9 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
     max_rescans_per_cell = StatusVar('max_rescans_per_cell', 3)
     save_annotated_images = StatusVar('save_annotated_images', True)
     output_data_dir = StatusVar('output_data_dir', '')
+    # Temporary hardware shift compensation for test (-X/20)
+    enable_hardware_x_shift = StatusVar('enable_hardware_x_shift', True)
+    hardware_x_shift_fraction = StatusVar('hardware_x_shift_fraction', -1.0 / 20.0)
 
     # =====================================================================
     # Signals for GUI and task tracking
@@ -795,6 +799,69 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
             self._current_candidate_index + 1,
             len(self._pending_candidates)))
 
+        # Determine current Cell Region X-range from CellProcessor module
+        x_range = 0.0
+        if self._current_cell_result is not None:
+            x_range = float(getattr(self._current_cell_result, 'x_range', 0.0))
+        if x_range <= 0.0 and hasattr(self, '_cell_processor'):
+            x_range = float(getattr(self._cell_processor, 'x_range', 0.0))
+        # Extract initial candidate position
+        if isinstance(candidate, dict):
+            cand_x = float(candidate.get('x', 0.0))
+            cand_x_range = float(candidate.get('x_range', 0.0))
+        else:
+            cand_x = float(getattr(candidate, 'x', 0.0))
+            cand_x_range = float(getattr(candidate, 'x_range', 0.0))
+
+        if x_range <= 0.0 and cand_x_range > 0.0:
+            x_range = cand_x_range
+        if x_range <= 0.0 and self._current_micro_x_coords is not None and len(self._current_micro_x_coords) > 1:
+            ptp_val = float(np.ptp(self._current_micro_x_coords))
+            if ptp_val > 0:
+                x_range = ptp_val
+        if x_range <= 0.0 and self._current_region is not None:
+            if hasattr(self._current_region, 'bbox_physical') and self._current_region.bbox_physical is not None:
+                x_range = float(abs(self._current_region.bbox_physical[1] - self._current_region.bbox_physical[0]))
+            if x_range <= 0.0 and getattr(self._current_region, 'width_um', 0.0) > 0:
+                x_range = float(self._current_region.width_um) * 1e-6
+
+        # Temporary hardware shift compensation for test (-X/20 where X is current ROI X-range):
+        # We click in left and actual NV is in right, so shift of -X/20 is added when dispatching to verifier.
+        if bool(self._val(self.enable_hardware_x_shift, True)):
+            shift_fraction = float(self._val(self.hardware_x_shift_fraction, -1.0 / 20.0))
+            x_shift = float(x_range * shift_fraction)
+        else:
+            shift_fraction = 0.0
+            x_shift = 0.0
+
+        # Clone candidate with shifted physical position for hardware verification
+        if isinstance(candidate, dict):
+            candidate_to_send = dict(candidate)
+            candidate_to_send['x_uncalibrated'] = cand_x
+            candidate_to_send['x_range'] = float(x_range)
+            candidate_to_send['x_shift'] = float(x_shift)
+            candidate_to_send['x'] = float(cand_x + x_shift)
+            candidate['x_uncalibrated'] = cand_x
+            candidate['x_range'] = float(x_range)
+            candidate['x_shift'] = float(x_shift)
+        else:
+            candidate_to_send = copy.copy(candidate)
+            candidate_to_send.x_uncalibrated = cand_x
+            candidate_to_send.x_range = float(x_range)
+            candidate_to_send.x_shift = float(x_shift)
+            candidate_to_send.x = float(cand_x + x_shift)
+            candidate.x_uncalibrated = cand_x
+            candidate.x_range = float(x_range)
+            candidate.x_shift = float(x_shift)
+
+        if abs(x_shift) > 0:
+            uncal_x = candidate_to_send.get('x_uncalibrated', cand_x) if isinstance(candidate_to_send, dict) else candidate_to_send.x_uncalibrated
+            final_x = candidate_to_send.get('x', cand_x) if isinstance(candidate_to_send, dict) else candidate_to_send.x
+            self._log('  [TEST SHIFT] Applied hardware X-shift of {0:.3f} um (range={1:.1f} um, factor={2:.3f}): '
+                      'seed X {3:.3f} um -> {4:.3f} um'.format(
+                          x_shift * 1e6, x_range * 1e6, shift_fraction,
+                          uncal_x * 1e6, final_x * 1e6))
+
         # Send a SINGLE candidate as a batch-of-one.  The verifier will
         # complete the full optical check for this one candidate before
         # sigVerificationFinished fires.
@@ -805,12 +872,14 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
         verifier.max_fluorescence_counts_per_s = float(
             self._val(self.max_fluorescence_counts_per_s, 8e6))
         verifier.verify_batch(
-            [candidate],
+            [candidate_to_send],
             run_context={
                 'region_id': self._current_region.region_id,
                 'cell_nv_count': self._cell_nv_count,
                 'candidate_index': self._current_candidate_index,
                 'rescan_number': self._cell_rescan_count,
+                'hardware_x_shift_m': x_shift,
+                'cell_x_range_m': x_range,
             })
 
     def _on_candidate_accepted(self, accepted_record):
@@ -847,6 +916,8 @@ class MultiScaleAutoNVFinderLogic(GenericLogic):
             'accepted_position_m': list(position),
             'seed_position_m': accepted_record.get('seed_position_m', list(position)),
             'region_id': accepted_record.get('region_id', self._current_region.region_id if self._current_region else ''),
+            'hardware_x_shift_m': accepted_record.get('x_shift', 0.0),
+            'x_uncalibrated': accepted_record.get('x_uncalibrated'),
             'overall_score': accepted_record.get('overall_score'),
             'optical_stats': accepted_record.get('optical_stats', {}),
             'pulsed_measurement': None,

@@ -55,7 +55,39 @@ def test_result_creation():
     assert r.nucleus_mask.shape == (100, 80)
     assert not r.cell_interior_mask.any()
     assert not r.processable_mask.any()
+    assert r.x_range == 0.0
+    assert r.hardware_x_shift == 0.0
     print('  [PASS] CellProcessingResult creation')
+
+
+def test_x_range_and_hardware_shift():
+    """Test X-axis range and temporary hardware shift (-X/20) calculation."""
+    proc = CellRegionProcessor()
+    ny, nx = 40, 50
+    image = np.zeros((ny, nx, 4))
+    # Coordinates spanning 40 um: 10 um to 50 um
+    x_coords = np.linspace(10e-6, 50e-6, nx)
+    image[0, :, 0] = x_coords
+    image[:, 0, 1] = np.linspace(0, 30e-6, ny)
+    image[:, :, 3] = 1000.0
+
+    result = proc.process(image)
+    assert abs(result.x_range - 40e-6) < 1e-9
+    assert abs(proc.x_range - 40e-6) < 1e-9
+    expected_shift = -40e-6 / 20.0  # -2.0 um
+    assert abs(result.hardware_x_shift - expected_shift) < 1e-9
+    assert abs(proc.compute_hardware_x_shift() - expected_shift) < 1e-9
+    assert result.diagnostics['x_range'] == result.x_range
+    assert result.diagnostics['hardware_x_shift'] == result.hardware_x_shift
+
+    # Test fallback to scan_region
+    from logic.scan_region_queue import ScanRegion
+    image_no_coords = np.zeros((ny, nx, 4))
+    region = ScanRegion('R-test', bbox_physical=(0.0, 30e-6, 0.0, 20e-6), width_um=30.0, height_um=20.0)
+    res_region = proc.process(image_no_coords, scan_region=region)
+    assert abs(res_region.x_range - 30e-6) < 1e-9
+    assert abs(res_region.hardware_x_shift - (-1.5e-6)) < 1e-9
+    print('  [PASS] test_x_range_and_hardware_shift')
 
 
 # ===================================================================

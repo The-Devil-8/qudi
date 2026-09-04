@@ -105,6 +105,12 @@ class POICandidate:
         True if candidate is near the processable mask boundary.
     extraction_method : str
         Label for the method used (``'cip_zone_adaptive'``).
+    x_shift : float
+        Applied temporary hardware X-shift in metres (for test verification).
+    x_uncalibrated : float
+        Original unshifted X physical position in metres.
+    x_range : float
+        Physical X range of the parent Cell Region in metres.
     """
 
     def __init__(self, candidate_id='', region_id='',
@@ -121,6 +127,11 @@ class POICandidate:
         self.x = float(x)
         self.y = float(y)
         self.z_estimate = float(z_estimate)
+
+        # Temporary hardware shift tracking (for test verification)
+        self.x_shift = 0.0
+        self.x_uncalibrated = float(x)
+        self.x_range = 0.0
 
         # Pixel position
         self.pixel_row = int(pixel_row)
@@ -156,6 +167,9 @@ class POICandidate:
             'x': self.x,
             'y': self.y,
             'z_estimate': self.z_estimate,
+            'x_shift': self.x_shift,
+            'x_uncalibrated': self.x_uncalibrated,
+            'x_range': self.x_range,
             'pixel_row': self.pixel_row,
             'pixel_col': self.pixel_col,
             'intensity': self.intensity,
@@ -399,6 +413,11 @@ class POIExtractor:
 
         result.candidates = list(raw_candidates)
         result.stats['total_detected'] = len(raw_candidates)
+
+        # Attach parent Cell Region physical X range to candidates
+        cell_x_range = getattr(cell_result, 'x_range', 0.0)
+        for cand in raw_candidates:
+            cand.x_range = cell_x_range
 
         if len(raw_candidates) == 0:
             result.diagnostics['reason'] = 'no_detections_in_processable_zone'

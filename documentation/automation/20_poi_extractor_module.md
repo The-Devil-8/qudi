@@ -237,6 +237,11 @@ class POICandidate:
     
     # Metadata
     extraction_method: str     # 'cip_masked' | 'adaptive_threshold' | etc.
+
+    # Hardware Calibration (Temporary Test Shift)
+    x_shift: float             # applied temporary hardware shift in metres (-X/20)
+    x_uncalibrated: float      # original unshifted physical X position
+    x_range: float             # parent Cell Region physical X range
 ```
 
 ### 4.2 POIExtractionResult

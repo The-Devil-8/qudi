@@ -300,3 +300,58 @@ class TestMultiScaleOrchestrator:
         assert os.path.exists(os.path.join(session_dir, 'run_all_pois.csv'))
         assert os.path.exists(os.path.join(session_dir, 'run_manifest.json'))
 
+    def test_hardware_x_shift_in_candidate_verification(self, logic):
+        """Test temporary hardware X-shift (-X/20) applied when sending candidate to verifier."""
+        from logic.poi_extractor import POICandidate
+        mock_verifier = MagicMock()
+        logic.nvcandidateverifier = MagicMock(return_value=mock_verifier)
+
+        region = ScanRegion('R-shift', bbox_physical=(-20e-6, 20e-6, -10e-6, 10e-6), width_um=40.0, height_um=20.0)
+        logic._current_region = region
+        logic._state = 'micro_processing'
+
+        # Candidate with physical position x=10 um
+        cand = POICandidate(candidate_id='POI-S1', x=10.0e-6, y=5.0e-6, z_estimate=1.0e-6)
+        cand.x_range = 40.0e-6
+
+        logic._pending_candidates = [cand]
+        logic._current_candidate_index = 0
+        logic._cell_nv_count = 0
+        MultiScaleAutoNVFinderLogic.target_nvs_per_cell = 3
+
+        # 1. Test enabled with default -1/20 shift
+        MultiScaleAutoNVFinderLogic.enable_hardware_x_shift = True
+        MultiScaleAutoNVFinderLogic.hardware_x_shift_fraction = -1.0 / 20.0
+
+        logic._verify_next_candidate()
+
+        assert mock_verifier.verify_batch.called
+        dispatched_cand = mock_verifier.verify_batch.call_args[0][0][0]
+        run_context = mock_verifier.verify_batch.call_args[1]['run_context']
+
+        # Expected shift: -40 um / 20 = -2 um
+        expected_shift = -40.0e-6 / 20.0
+        expected_x = 10.0e-6 + expected_shift
+
+        assert abs(dispatched_cand.x - expected_x) < 1e-9
+        assert abs(dispatched_cand.x_shift - expected_shift) < 1e-9
+        assert abs(dispatched_cand.x_uncalibrated - 10.0e-6) < 1e-9
+        assert abs(dispatched_cand.x_range - 40.0e-6) < 1e-9
+        assert abs(run_context['hardware_x_shift_m'] - expected_shift) < 1e-9
+        assert abs(run_context['cell_x_range_m'] - 40.0e-6) < 1e-9
+
+        # 2. Test disabled
+        mock_verifier.reset_mock()
+        MultiScaleAutoNVFinderLogic.enable_hardware_x_shift = False
+        cand2 = POICandidate(candidate_id='POI-S2', x=10.0e-6, y=5.0e-6, z_estimate=1.0e-6)
+        cand2.x_range = 40.0e-6
+        logic._pending_candidates = [cand2]
+        logic._current_candidate_index = 0
+
+        logic._verify_next_candidate()
+
+        assert mock_verifier.verify_batch.called
+        dispatched_cand2 = mock_verifier.verify_batch.call_args[0][0][0]
+        assert abs(dispatched_cand2.x - 10.0e-6) < 1e-9
+        assert dispatched_cand2.x_shift == 0.0
+

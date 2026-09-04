@@ -61,6 +61,8 @@ The `ImageAnalyzer` logic processes the confocal scan to identify Points of Inte
 Before detailed verification, the Z-axis (focus) must be optimized. The `ZSurfaceFinder` module (currently a stub) will perform a 1D Z-scan over the POI to locate the surface and position the objective at the optimal depth for the NV center.
 
 ### 4. Verification (Hybrid Mode)
+Before dispatching the candidate to `NVCandidateVerifier`:
+- **Temporary Hardware Shift Injection (-X/20)**: To compensate for live hardware scanner offset ("clicking in left we get actual, so -ve"), the orchestrator retrieves the current Cell Region's physical X range $X$ from `CellRegionProcessor` and injects $\Delta x = -X/20$ (`shift_fraction = -0.05`) into the candidate seed coordinates sent to `verifier.verify_batch()`. The original unshifted position is preserved in `candidate.x_uncalibrated` for display and logging.
 The POI is passed to the `NVCandidateVerifier`.
 - **Hybrid Mode**: The verifier can operate in a hybrid mode, utilizing both continuous-wave (CW) ODMR and pulsed ODMR or auto-correlation (g(2)) if configured. This multi-step verification ensures high confidence that the POI is a single NV center before committing to long measurements.
 
